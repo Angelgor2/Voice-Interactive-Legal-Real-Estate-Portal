@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Evon + Timbre — Voice-Interactive Legal Real Estate Portal",
-  description: "AI-powered voice portal for navigating complex legal agreements, lease documents, and property deeds with Gnani Voice AI & NVIDIA NIM reasoning.",
+  title: "LexiVoice — Voice-Interactive Legal & Real Estate Portal",
+  description: "LexiVoice: AI-powered multilingual voice portal for navigating complex legal agreements, lease documents, and property deeds with Gnani Voice AI.",
 };
 
 export default function RootLayout({

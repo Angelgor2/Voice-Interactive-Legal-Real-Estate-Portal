@@ -187,18 +187,25 @@ async def query_by_voice(
         top_k=4
     )
 
-    # Step 3: Evon / Nemotron Reasoning
+    # Step 3: LexiVoice Multilingual Reasoning
+    if language_code and "auto" not in language_code.lower():
+        target_lang = language_code
+    elif detected_lang and "auto" not in detected_lang.lower():
+        target_lang = detected_lang
+    else:
+        target_lang = "en-IN"
+
     llm_res = await llm_service.analyze_legal_query(
         query=user_query,
         retrieved_clauses=retrieved_clauses,
-        language=detected_lang
+        language=target_lang
     )
 
-    # Step 4: TTS with Gnani Timbre
+    # Step 4: TTS with Gnani Timbre in selected language
     spoken_text = llm_res.get("spoken_summary", "Here is the summary of your contract clause.")
     tts_res = await gnani_service.synthesize_speech(
         text=spoken_text,
-        language="en-IN" if "auto" in detected_lang else detected_lang,
+        language=target_lang,
         voice=voice
     )
 
@@ -231,22 +238,28 @@ async def query_by_text(req: TextQueryRequest):
         top_k=4
     )
 
+    # Determine target language matching user selection
+    target_lang = req.language_code
+    if not target_lang or "auto" in target_lang.lower():
+        from services.llm_service import detect_query_language
+        target_lang = detect_query_language(user_query) or "en-IN"
+
     llm_res = await llm_service.analyze_legal_query(
         query=user_query,
         retrieved_clauses=retrieved_clauses,
-        language=req.language_code
+        language=target_lang
     )
 
     spoken_text = llm_res.get("spoken_summary", "Clause analysis complete.")
     tts_res = await gnani_service.synthesize_speech(
         text=spoken_text,
-        language="en-IN",
+        language=target_lang,
         voice=req.voice
     )
 
     return {
         "user_query": user_query,
-        "detected_language": req.language_code,
+        "detected_language": target_lang,
         "executive_bullet_points": llm_res.get("executive_bullet_points", []),
         "cited_clauses": llm_res.get("cited_clauses", []),
         "actionable_advice": llm_res.get("actionable_advice", ""),

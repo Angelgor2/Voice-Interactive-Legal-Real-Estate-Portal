@@ -66,40 +66,91 @@ interface QueryResponse {
 
 const API_BASE = "http://localhost:8000";
 
-const DEFAULT_LEASE_QUESTIONS = [
-  "What happens if I terminate before the 24-month lock-in period?",
-  "Are society maintenance charges of ₹4,500 included in the rent?",
-  "When will my security deposit of ₹2,40,000 be refunded?",
-  "What is the annual rent escalation rate under Clause 2.1?",
-  "Is subletting or commercial use permitted under Clause 6.1?",
-  "Can I make renovations or structural alterations under Clause 15.2?",
-  "Who pays the stamp duty and e-registration charges under Clause 19.1?",
-];
+const LOCALIZED_SUGGESTED_PROMPTS: Record<string, string[]> = {
+  "en-IN": [
+    "What happens if I terminate before the 24-month lock-in period?",
+    "Are society maintenance charges of ₹4,500 included in the rent?",
+    "When will my security deposit of ₹2,40,000 be refunded?",
+    "What is the annual rent escalation rate under Clause 2.1?",
+    "Is subletting or commercial use permitted under Clause 6.1?",
+    "Can I make renovations or structural alterations under Clause 15.2?",
+    "Who pays the stamp duty and e-registration charges under Clause 19.1?",
+  ],
+  "hi-IN": [
+    "क्या 24 महीने के लॉक-इन पीरियड से पहले लीज समाप्त करने पर जुर्माना लगेगा?",
+    "क्या किराए में ₹4,500 का सोसायटी मेंटेनेंस शुल्क शामिल है?",
+    "₹2,40,000 की सुरक्षा जमा राशि कब और कैसे वापस मिलेगी?",
+    "खंड 2.1 के तहत वार्षिक किराया वृद्धि की दर क्या है?",
+    "क्या खंड 6.1 के तहत सबलेटिंग या व्यावसायिक उपयोग की अनुमति है?",
+    "क्या खंड 15.2 के तहत मरम्मत या ढांचागत बदलाव किए जा सकते हैं?",
+    "खंड 19.1 के तहत स्टाम्प ड्यूटी और रजिस्ट्रेशन शुल्क कौन भरेगा?",
+  ],
+  "mr-IN": [
+    "24 महिन्यांच्या लॉक-इन कालावधीपूर्वी करार संपवल्यास काय दंड होईल?",
+    "दरमहा ₹4,500 चे सोसायटी देखभाल शुल्क भाड्यात समाविष्ट आहे का?",
+    "₹2,40,000 ची सुरक्षा ठेव कधी परत केली जाईल?",
+    "कलम 2.1 अंतर्गत वार्षिक भाडेवाढ किती आहे?",
+    "कलम 6.1 अंतर्गत पोटभाडेकरू ठेवण्यास किंवा व्यावसायिक वापरास परवानगी आहे का?",
+    "कलम 15.2 नुसार जागेत संरचनात्मक बदल करता येतील का?",
+    "कलम 19.1 नुसार मुद्रांक शुल्क आणि नोंदणी खर्च कोण देईल?",
+  ],
+  "kn-IN": [
+    "24 ತಿಂಗಳ ಲಾಕ್-ಇನ್ ಅವಧಿಗೆ ಮುನ್ನ ಗುತ್ತಿಗೆ ರದ್ದುಗೊಳಿಸಿದರೆ ಏನು ಪರಿಣಾಮ?",
+    "ತಿಂಗಳ ₹4,500 ಸೊಸೈಟಿ ನಿರ್ವಹಣಾ ವೆಚ್ಚವು ಬಾಡಿಗೆಯಲ್ಲಿ ಸೇರಿದೆಯೇ?",
+    "₹2,40,000 ಭದ್ರತಾ ಠೇವಣಿಯನ್ನು ಯಾವಾಗ ಮರುಪಾವತಿಸಲಾಗುತ್ತದೆ?",
+    "ಷರತ್ತು 2.1 ರ ಅಡಿಯಲ್ಲಿ ವಾರ್ಷಿಕ ಬಾಡಿಗೆ ಏರಿಕೆ ದರ ಎಷ್ಟು?",
+    "ಷರತ್ತು 6.1 ರ ಅಡಿಯಲ್ಲಿ ಉಪ-ಬಾಡಿಗೆಗೆ ಅವಕಾಶವಿದೆಯೇ?",
+    "ಷರತ್ತು 15.2 ರ ಅಡಿಯಲ್ಲಿ ಬದಲಾವಣೆಗಳನ್ನು ಮಾಡಬಹುದೇ?",
+    "ಷರತ್ತು 19.1 ರ ಪ್ರಕಾರ ಮುದ್ರಾಂಕ ಶುಲ್ಕವನ್ನು ಯಾರು ಪಾವತಿಸಬೇಕು?",
+  ],
+  "ta-IN": [
+    "24 மாத லாக்-இன் காலத்திற்கு முன் வெளியேறினால் என்ன நடக்கும்?",
+    "மாதாந்திர ₹4,500 சொசைட்டி பராமரிப்பு கட்டணம் வாடகையில் அடங்குமா?",
+    "₹2,40,000 பாதுகாப்பு வைப்புத்தொகை எப்போது திரும்ப வழங்கப்படும்?",
+    "பிரிவு 2.1 இன் கீழ் ஆண்டு வாடகை உயர்வு விகிதம் என்ன?",
+    "பிரிவு 6.1 இன் கீழ் உள்வாடகைக்கு அனுமதி உள்ளதா?",
+    "பிரிவு 15.2 இன் கீழ் மாற்றங்களைச் செய்ய முடியுமா?",
+    "பிரிவு 19.1 இன் படி முத்திரைத்தாள் கட்டணத்தை யார் செலுத்துவது?",
+  ],
+  "te-IN": [
+    "24 నెలల లాక్-ఇన్ కాలానికి ముందే రద్దు చేస్తే ఏమి జరుగుతుంది?",
+    "నెలకు ₹4,500 సొసైటీ నిర్వహణ ఛార్జీలు అద్దెలో చేర్చబడి ఉన్నాయా?",
+    "₹2,40,000 సెక్యూరిటీ డిపాజిట్ ఎప్పుడు తిరిగి చెల్లించబడుతుంది?",
+    "క్లాజ్ 2.1 ప్రకారం వార్షిక అద్దె పెరుగుదల ఎంత?",
+    "క్లాజ్ 6.1 కింద సబ్-లీజుకు అనుమతి ఉందా?",
+    "క్లాజ్ 15.2 కింద నిర్మాణ మార్పులు చేయవచ్చా?",
+    "క్లాజ్ 19.1 ప్రకారం స్టాంప్ డ్యూటీ ఎవరు చెల్లించాలి?",
+  ],
+  "bn-IN": [
+    "২৪ মাসের লক-ইন সময়সীমার আগে লিজ বাতিল করলে কী জরিমানা হবে?",
+    "মাসিক ₹৪,৫০০ সোসাইটি রক্ষণাবেক্ষণ চার্জ কি ভাড়ার অন্তর্ভুক্ত?",
+    "₹২,৪০,০০০ জামানত কখন এবং কীভাবে ফেরত পাওয়া যাবে?",
+    "ধারা ২.১ অনুযায়ী বার্ষিক ভাড়া বৃদ্ধির হার কত?",
+    "ধারা ৬.১ অনুযায়ী সাবলেট বা বাণিজ্যিক ব্যবহারের অনুমতি আছে কি?",
+    "ধারা ১৫.২ অনুযায়ী কাঠামোগত পরিবর্তন করা যাবে কি?",
+    "ধারা ১৯.১ অনুযায়ী স্ট্যাম্প ডিউটি ও রেজিস্ট্রেশন খরচ কে দেবে?",
+  ],
+  "gu-IN": [
+    "24 મહિનાના લૉક-ઇન સમયગાળા પહેલાં લીઝ રદ કરવાથી શું થશે?",
+    "માસિક ₹4,500 નો સોસાયટી મેઇન્ટેનન્સ ચાર્જ ભાડામાં સામેલ છે?",
+    "₹2,40,000 ની સિક્યોરિટી ડિપોઝિટ ક્યારે પરત મળશે?",
+    "કલમ 2.1 હેઠળ વાર્ષિક ભાડા વધારાનો દર કેટલો છે?",
+    "કલમ 6.1 હેઠળ સબલેટિંગ કે વ્યાપારી ઉપયોગની મંજૂરી છે?",
+    "કલમ 15.2 હેઠળ માળખાકીય ફેરફાર કરી શકાય?",
+    "કલમ 19.1 મુજબ સ્ટેમ્પ ડ્યુટી અને નોંધણી ખર્ચ કોણ ચૂકવશે?",
+  ],
+};
 
-function getSuggestedPrompts(clauses?: Clause[]): string[] {
+function getSuggestedPrompts(clauses?: Clause[], langCode: string = "en-IN"): string[] {
+  const normLang = langCode === "indic-auto" ? "en-IN" : langCode;
+  const localizedDefaults = LOCALIZED_SUGGESTED_PROMPTS[normLang] || LOCALIZED_SUGGESTED_PROMPTS["en-IN"];
+
   if (!clauses || clauses.length === 0) {
-    return DEFAULT_LEASE_QUESTIONS;
+    return localizedDefaults;
   }
-  const derived: string[] = [];
-  for (const c of clauses) {
-    const text = ((c.title || "") + " " + (c.quote || "")).toLowerCase();
-    if (text.includes("lock-in") || text.includes("terminat")) {
-      derived.push(`What happens if I terminate before the lock-in period under ${c.clause_number}?`);
-    } else if (text.includes("maintenance") || text.includes("society dues")) {
-      derived.push(`Are society maintenance charges included in rent under ${c.clause_number}?`);
-    } else if (text.includes("deposit refund") || text.includes("refund timeline") || text.includes("timeline")) {
-      derived.push(`When and how is the security deposit refunded under ${c.clause_number}?`);
-    } else if (text.includes("escalat") || text.includes("monthly rent")) {
-      derived.push(`What is the monthly rent and escalation rate in ${c.clause_number}?`);
-    } else if (text.includes("sublet") || text.includes("commercial")) {
-      derived.push(`Is subletting or commercial use permitted under ${c.clause_number}?`);
-    } else if (text.includes("alteration") || text.includes("structural")) {
-      derived.push(`Can I make structural alterations or renovations under ${c.clause_number}?`);
-    } else if (text.includes("stamp duty") || text.includes("registration")) {
-      derived.push(`Who pays stamp duty and registration under ${c.clause_number}?`);
-    }
-  }
-  return derived.length > 0 ? derived : DEFAULT_LEASE_QUESTIONS;
+
+  // If active document has clauses, return localized prompts for the active contract
+  return localizedDefaults;
 }
 
 const TIMBRE_VOICES = [
@@ -175,8 +226,8 @@ export default function LegalPortalPage() {
   const [negotiationDraft, setNegotiationDraft] = useState<string>("");
 
   const suggestedPrompts = useMemo(() => {
-    return getSuggestedPrompts(activeDoc?.clauses);
-  }, [activeDoc?.clauses]);
+    return getSuggestedPrompts(activeDoc?.clauses, languageCode);
+  }, [activeDoc?.clauses, languageCode]);
 
   // Refs
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -509,16 +560,15 @@ export default function LegalPortalPage() {
           {/* Logo & Brand */}
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 neu-sm flex items-center justify-center font-serif text-lg font-bold text-[#5D6DF6] bg-[#E6E9EF]">
-              E+
+              LV
             </div>
             <div>
               <div className="text-lg font-extrabold tracking-tight flex items-center gap-1.5">
-                <span>Evon</span>
-                <span className="font-light text-[#7C859B]">+</span>
-                <span>Timbre</span>
+                <span className="text-[#5D6DF6]">Lexi</span>
+                <span className="text-[#2E3440]">Voice</span>
               </div>
               <div className="text-[10px] font-semibold text-[#7C859B] tracking-wider uppercase">
-                Gnani Prisma STT • Nemotron Reasoning • Timbre TTS
+                Voice-Interactive Legal Document Intelligence
               </div>
             </div>
           </div>
@@ -675,9 +725,9 @@ export default function LegalPortalPage() {
                           “{cl.quote}”
                         </div>
 
-                        {/* Evon Insight */}
+                        {/* LexiVoice Insight */}
                         <p className="text-xs text-[#2E3440] leading-relaxed">
-                          <strong className="text-[#5D6DF6] font-bold">Evon says: </strong>
+                          <strong className="text-[#5D6DF6] font-bold">LexiVoice insight: </strong>
                           {cl.advice || cl.evon_insight || "Review against standard statutory benchmarks."}
                         </p>
 
@@ -743,7 +793,7 @@ export default function LegalPortalPage() {
                 <div className="text-left">
                   <h3 className="text-sm font-extrabold tracking-tight uppercase text-[#7C859B] flex items-center gap-1.5">
                     <Sparkles className="w-4 h-4 text-[#5D6DF6]" />
-                    <span>Voice Query Assistant</span>
+                    <span>LexiVoice Assistant</span>
                   </h3>
                   <p className="text-xs text-[#2E3440] font-medium">
                     Speaks in English or Regional Indic Languages via Timbre v3.0
@@ -770,13 +820,15 @@ export default function LegalPortalPage() {
                     onChange={(e) => setLanguageCode(e.target.value)}
                     className="neu-inset px-2.5 py-1 text-xs font-bold text-[#5D6DF6] bg-transparent outline-none cursor-pointer"
                   >
-                    <option value="indic-auto">Indic-Auto</option>
+                    <option value="indic-auto">Indic-Auto (Detect)</option>
                     <option value="en-IN">English (India)</option>
                     <option value="hi-IN">Hindi (हिन्दी)</option>
                     <option value="mr-IN">Marathi (मराठी)</option>
+                    <option value="kn-IN">Kannada (ಕನ್ನಡ)</option>
                     <option value="ta-IN">Tamil (தமிழ்)</option>
                     <option value="te-IN">Telugu (తెలుగు)</option>
-                    <option value="kn-IN">Kannada (ಕನ್ನಡ)</option>
+                    <option value="bn-IN">Bengali (বাংলা)</option>
+                    <option value="gu-IN">Gujarati (ગુજરાતી)</option>
                   </select>
                 </div>
               </div>
@@ -1011,7 +1063,7 @@ export default function LegalPortalPage() {
                     <div className="flex items-start gap-2.5">
                       <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                       <div>
-                        <div className="text-xs font-bold text-amber-900">Evon Actionable Strategy</div>
+                        <div className="text-xs font-bold text-amber-900">LexiVoice Actionable Strategy</div>
                         <div className="text-xs text-amber-800 mt-0.5 leading-relaxed">
                           {latestResponse.actionable_advice}
                         </div>
@@ -1043,7 +1095,7 @@ export default function LegalPortalPage() {
             </div>
 
             <p className="text-xs text-[#7C859B]">
-              Evon has drafted this polite, legally sound counter-proposal. You can edit and copy it to email your landlord.
+              LexiVoice has drafted this polite, legally sound counter-proposal. You can edit and copy it to email your landlord.
             </p>
 
             <textarea

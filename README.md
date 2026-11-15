@@ -1,4 +1,4 @@
-# Evon + Timbre — Voice-Interactive Legal & Real Estate Portal
+# lexi Voice-Interactive Legal & Real Estate Portal
 
 > **Submission for The Great Indian AI Internship Challenge by Gnani.ai**  
 > An AI-powered, client-facing legal portal for buyers, tenants, and investors to navigate complex lease agreements, property sale deeds, and real estate contracts via natural voice in English and regional Indic languages.

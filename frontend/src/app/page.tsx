@@ -5,26 +5,24 @@ import {
   Mic,
   MicOff,
   Volume2,
-  VolumeX,
   Play,
   Pause,
   Upload,
   FileText,
   AlertTriangle,
   CheckCircle,
-  HelpCircle,
   Send,
   Sparkles,
   ExternalLink,
   RotateCcw,
-  Sliders,
   Copy,
   Mail,
   ShieldAlert,
   ChevronRight,
   Layers,
   ArrowRight,
-  Info
+  Info,
+  Loader2
 } from "lucide-react";
 
 interface Clause {
@@ -64,8 +62,6 @@ interface QueryResponse {
   audio_base64?: string;
   audio_format?: string;
   tts_voice?: string;
-  tts_fallback?: boolean;
-  stt_fallback?: boolean;
 }
 
 const API_BASE = "http://localhost:8000";
@@ -77,22 +73,68 @@ const QUICK_QUESTIONS = [
   "Is there an annual rent escalation clause?"
 ];
 
+const TIMBRE_VOICES = [
+  { name: "Shivani", gender: "Female", desc: "Expressive & Natural" },
+  { name: "Avinash", gender: "Male", desc: "Authoritative & Deep" },
+  { name: "Lakshmi", gender: "Female", desc: "Warm & Clear" },
+  { name: "Kalpana", gender: "Female", desc: "Professional Tone" },
+  { name: "Shubham", gender: "Male", desc: "Conversational" },
+  { name: "Prakash", gender: "Male", desc: "Formal Legal Tone" },
+  { name: "Devansh", gender: "Male", desc: "Crisp & Energetic" },
+  { name: "Yashraj", gender: "Male", desc: "Polite & Calm" }
+];
+
+// Pure 16kHz mono 16-bit PCM WAV encoder using Web Audio API
+function exportWAV(audioData: Float32Array, sampleRate: number = 16000): Blob {
+  const buffer = new ArrayBuffer(44 + audioData.length * 2);
+  const view = new DataView(buffer);
+
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + audioData.length * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true); // 16-bit
+  writeString(36, "data");
+  view.setUint32(40, audioData.length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < audioData.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, audioData[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
 export default function LegalPortalPage() {
   const [documents, setDocuments] = useState<DocumentInfo[]>([]);
   const [activeDocId, setActiveDocId] = useState<string>("sample_andheri_lease");
   const [activeDoc, setActiveDoc] = useState<DocumentInfo | null>(null);
   const [activeTab, setActiveTab] = useState<"clauses" | "pdf">("clauses");
   const [highlightedClauseId, setHighlightedClauseId] = useState<string | null>(null);
+  const [isLoadingDoc, setIsLoadingDoc] = useState<boolean>(true);
 
   // Audio recording state
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [recordingDuration, setRecordingDuration] = useState<number>(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [languageCode, setLanguageCode] = useState<string>("indic-auto");
-  const [voice, setVoice] = useState<string>("Nalini");
+  const [voice, setVoice] = useState<string>("Shivani");
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
-  // Text query fallback
+  // Text query input
   const [textInput, setTextInput] = useState<string>("");
 
   // Response state
@@ -104,22 +146,21 @@ export default function LegalPortalPage() {
   const [negotiationDraft, setNegotiationDraft] = useState<string>("");
 
   // Refs
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const pcmChunksRef = useRef<Float32Array[]>([]);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const clauseRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
 
-  // Show toast notification
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
+    setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Fetch document list and details
   useEffect(() => {
     fetchDocuments();
   }, []);
@@ -136,81 +177,110 @@ export default function LegalPortalPage() {
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents || []);
+        if (data.documents && data.documents.length > 0 && !activeDocId) {
+          setActiveDocId(data.documents[0].doc_id);
+        }
       }
-    } catch {
-      console.warn("Backend not reached yet, using default document schema.");
+    } catch (err) {
+      console.error("Failed to fetch documents:", err);
+      showToast("Cannot reach backend server. Make sure port 8000 is running.");
     }
   };
 
   const fetchDocumentDetails = async (id: string) => {
+    setIsLoadingDoc(true);
     try {
       const res = await fetch(`${API_BASE}/api/documents/${id}`);
       if (res.ok) {
         const data = await res.json();
         setActiveDoc(data);
+      } else {
+        showToast("Error loading document details.");
       }
-    } catch {
-      console.warn("Backend loading, using preloaded mock doc.");
+    } catch (err) {
+      console.error("Failed to load document:", err);
+      showToast("Could not load document details.");
+    } finally {
+      setIsLoadingDoc(false);
     }
   };
 
-  // Audio recording handlers
+  // Recording with native Web Audio API (Pristine 16kHz Mono WAV)
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioChunksRef.current = [];
+      mediaStreamRef.current = stream;
+      pcmChunksRef.current = [];
 
-      // Web Audio API visualizer
-      const audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-      const analyser = audioCtx.createAnalyser();
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const audioCtx = new AudioCtx({ sampleRate: 16000 });
+      audioContextRef.current = audioCtx;
+
       const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 64;
       source.connect(analyser);
-
-      audioContextRef.current = audioCtx;
       analyserRef.current = analyser;
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-      mediaRecorderRef.current = mediaRecorder;
+      // ScriptProcessorNode for raw PCM extraction
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      processorNodeRef.current = processor;
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
+      processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+        pcmChunksRef.current.push(new Float32Array(inputData));
       };
 
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        setAudioBlob(blob);
-        stream.getTracks().forEach((track) => track.stop());
-        if (audioContextRef.current) {
-          audioContextRef.current.close();
-        }
-      };
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
 
-      mediaRecorder.start(200);
       setIsRecording(true);
       setRecordingDuration(0);
-
-      // Start waveform drawing loop
       drawWaveform();
     } catch (err) {
-      console.error("Microphone access denied or error:", err);
-      showToast("Microphone permission required for voice query.");
+      console.error("Microphone access error:", err);
+      showToast("Microphone access denied. Please grant permission in your browser.");
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+    if (!isRecording) return;
+    setIsRecording(false);
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
     }
+
+    if (processorNodeRef.current) {
+      processorNodeRef.current.disconnect();
+    }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+
+    // Merge PCM chunks into a single Float32Array
+    const chunks = pcmChunksRef.current;
+    const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+    const merged = new Float32Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    // Export as genuine 16kHz WAV
+    const wavBlob = exportWAV(merged, 16000);
+    setAudioBlob(wavBlob);
+
+    // Auto-send voice query immediately
+    handleSendVoiceQuery(wavBlob);
   };
 
-  // Recording timer
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isRecording) {
@@ -221,7 +291,6 @@ export default function LegalPortalPage() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  // Waveform drawing
   const drawWaveform = () => {
     if (!canvasRef.current || !analyserRef.current) return;
     const canvas = canvasRef.current;
@@ -242,7 +311,7 @@ export default function LegalPortalPage() {
 
       for (let i = 0; i < bufferLength; i++) {
         const barHeight = (dataArray[i] / 255) * canvas.height * 0.9;
-        ctx.fillStyle = "#6C7BFF";
+        ctx.fillStyle = "#5D6DF6";
         ctx.beginPath();
         ctx.roundRect(x, canvas.height - barHeight, barWidth - 2, barHeight, [4, 4, 0, 0]);
         ctx.fill();
@@ -252,14 +321,14 @@ export default function LegalPortalPage() {
     render();
   };
 
-  // Submit audio query to backend
+  // Real backend query via voice
   const handleSendVoiceQuery = async (blobToSend?: Blob) => {
     const targetBlob = blobToSend || audioBlob;
     if (!targetBlob) return;
 
     setIsProcessing(true);
     const formData = new FormData();
-    formData.append("audio_file", targetBlob, "recording.webm");
+    formData.append("audio_file", targetBlob, "speech.wav");
     formData.append("doc_id", activeDocId);
     formData.append("language_code", languageCode);
     formData.append("voice", voice);
@@ -270,20 +339,24 @@ export default function LegalPortalPage() {
         body: formData,
       });
 
-      if (!res.ok) throw new Error("Voice query failed");
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(errJson.detail || "Voice query processing failed.");
+      }
+
       const data: QueryResponse = await res.json();
       applyResponse(data);
-    } catch (err) {
-      console.error(err);
-      // Seamless mock response for demonstration
-      triggerFallbackWorkflow("What happens if I terminate the lease early?");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("Voice query error:", err);
+      showToast(`Query error: ${msg}`);
     } finally {
       setIsProcessing(false);
       setAudioBlob(null);
     }
   };
 
-  // Submit text query to backend
+  // Real backend query via text
   const handleSendTextQuery = async (queryText?: string) => {
     const q = (queryText || textInput).trim();
     if (!q) return;
@@ -301,11 +374,17 @@ export default function LegalPortalPage() {
         }),
       });
 
-      if (!res.ok) throw new Error("Text query failed");
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(errJson.detail || "Query processing failed.");
+      }
+
       const data: QueryResponse = await res.json();
       applyResponse(data);
-    } catch {
-      triggerFallbackWorkflow(q);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("Query error:", err);
+      showToast(`Query error: ${msg}`);
     } finally {
       setIsProcessing(false);
       setTextInput("");
@@ -315,7 +394,7 @@ export default function LegalPortalPage() {
   const applyResponse = (data: QueryResponse) => {
     setLatestResponse(data);
 
-    // Prepare audio URL from base64
+    // Decode base64 audio and prepare playback
     if (data.audio_base64) {
       const byteCharacters = atob(data.audio_base64);
       const byteNumbers = new Array(byteCharacters.length);
@@ -327,16 +406,18 @@ export default function LegalPortalPage() {
       const url = URL.createObjectURL(blob);
       setAudioUrl(url);
 
-      // Auto play Timbre spoken audio
       setTimeout(() => {
         if (audioPlayerRef.current) {
           audioPlayerRef.current.currentTime = 0;
-          audioPlayerRef.current.play().then(() => setIsPlayingAudio(true)).catch(() => {});
+          audioPlayerRef.current
+            .play()
+            .then(() => setIsPlayingAudio(true))
+            .catch((e) => console.log("Autoplay was blocked by browser:", e));
         }
-      }, 300);
+      }, 250);
     }
 
-    // Auto-scroll and highlight cited clause on left panel
+    // Auto-scroll and highlight cited clause
     if (data.cited_clauses && data.cited_clauses.length > 0) {
       const firstClause = data.cited_clauses[0];
       const clauseId = firstClause.clause_id || firstClause.clause_number.replace(/\s+/g, "_");
@@ -348,110 +429,18 @@ export default function LegalPortalPage() {
         if (el) {
           el.scrollIntoView({ behavior: "smooth", block: "center" });
         }
-      }, 200);
+      }, 300);
     }
   };
 
-  // Local fallback response generator for reliable client demos
-  const triggerFallbackWorkflow = (q: string) => {
-    const isTermination = /terminate|early|penalty|lock-in/i.test(q);
-    const isMaintenance = /maintenance|society|charge|water/i.test(q);
-    const isDeposit = /deposit|security|refund/i.test(q);
-
-    let resp: QueryResponse;
-    if (isTermination) {
-      resp = {
-        user_query: q,
-        detected_language: "en-IN (Indic-Auto)",
-        confidence: 0.98,
-        spoken_summary:
-          "Under Clause 8.2, you cannot terminate before 24 months without forfeiting 6 months of rent as penalty. This penalty is unusually steep—standard metropolitan practice is 1 to 2 months notice.",
-        executive_bullet_points: [
-          "24-Month Lock-in Period: Unilateral exit before 2 years triggers full penalty.",
-          "6 Months Rent Forfeiture: Penalty of ₹2,40,000 irrespective of notice provided.",
-          "High Negotiation Priority: Propose reducing penalty to 1-2 months notice rent."
-        ],
-        cited_clauses: [
-          {
-            clause_id: "sample_andheri_lease_c_8_2",
-            clause_number: "Clause 8.2",
-            page_number: 2,
-            title: "Lock-in Period & Early Termination Penalty",
-            quote:
-              "Tenant shall not terminate this agreement before 24 months. Early exit will attract a penalty equal to 6 months rent, irrespective of notice period served.",
-            risk_level: "High Risk",
-            risk_badge: "HIGH RISK",
-            evon_insight:
-              "6 months penalty is unusually harsh. Standard in Mumbai is 2–3 months notice. Negotiate this down before signing."
-          }
-        ],
-        actionable_advice:
-          "Counter-propose: 'Either party may terminate the lease after 11 months by serving 2 months advance notice without additional penalty.'"
-      };
-    } else if (isMaintenance) {
-      resp = {
-        user_query: q,
-        detected_language: "en-IN (Indic-Auto)",
-        confidence: 0.96,
-        spoken_summary:
-          "According to Clause 4.3, monthly society maintenance of ₹4,500 is paid directly by you to the housing society. This is standard and reasonable.",
-        executive_bullet_points: [
-          "Direct Society Dues: ₹4,500 monthly paid directly to Sea Breeze CHS office.",
-          "Excluded from Base Rent: Base rent of ₹40,000 does not include society dues.",
-          "Utilities on Actuals: Electricity and gas are billed strictly on consumption."
-        ],
-        cited_clauses: [
-          {
-            clause_id: "sample_andheri_lease_c_4_3",
-            clause_number: "Clause 4.3",
-            page_number: 1,
-            title: "Maintenance Charges & Society Dues",
-            quote:
-              "The Lessee shall pay monthly society maintenance of INR 4,500 directly to the Sea Breeze Co-operative Housing Society office.",
-            risk_level: "Safe",
-            risk_badge: "SAFE",
-            evon_insight: "Standard term. Direct society payment prevents landlord markups."
-          }
-        ]
-      };
-    } else {
-      resp = {
-        user_query: q,
-        detected_language: "en-IN (Indic-Auto)",
-        confidence: 0.95,
-        spoken_summary:
-          "Clause 12.1 specifies a security deposit of ₹2,40,000 refundable within 90 days. 90 days is slow—we recommend negotiating for a 30-day refund window.",
-        executive_bullet_points: [
-          "Deposit Amount: ₹2,40,000 (equivalent to 6 months rent) held interest-free.",
-          "Delayed Refund: 90 days repayment period extends landlord leverage unnecessarily.",
-          "Suggested Adjustment: Request refund within 30 days of key handover."
-        ],
-        cited_clauses: [
-          {
-            clause_id: "sample_andheri_lease_c_12_1",
-            clause_number: "Clause 12.1",
-            page_number: 2,
-            title: "Security Deposit Refund Timeline",
-            quote:
-              "Security deposit of INR 2,40,000 shall be held without interest and refunded within 90 days of vacating after adjusting unpaid utility dues.",
-            risk_level: "Medium Risk",
-            risk_badge: "MEDIUM",
-            evon_insight: "90 days is too long. Standard practice in Mumbai is 30–45 days."
-          }
-        ]
-      };
-    }
-    applyResponse(resp);
-  };
-
-  // File upload handler
+  // Upload custom PDF document
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const formData = new FormData();
     formData.append("file", file);
-    showToast(`Uploading and parsing ${file.name} with PyMuPDF...`);
+    showToast(`Parsing ${file.name} with PyMuPDF & indexing in Qdrant...`);
 
     try {
       const res = await fetch(`${API_BASE}/api/upload`, {
@@ -461,18 +450,20 @@ export default function LegalPortalPage() {
 
       if (res.ok) {
         const data = await res.json();
-        showToast("Document indexed in Qdrant successfully!");
-        fetchDocuments();
+        showToast("New agreement indexed successfully!");
+        await fetchDocuments();
         setActiveDocId(data.document.doc_id);
+      } else {
+        showToast("Upload failed: only PDF format supported.");
       }
-    } catch {
-      showToast("Uploaded file processed in local session.");
+    } catch (err) {
+      console.error(err);
+      showToast("Error uploading document to backend server.");
     }
   };
 
-  // Draft negotiation email
   const openNegotiationModal = (clause: Clause) => {
-    const draft = `Subject: Proposed Amendment to ${clause.clause_number} (${clause.title}) - Tenancy Agreement\n\nDear Landlord / Property Manager,\n\nThank you for sharing the draft agreement for Flat No. 804, Sea Breeze Apartments. Upon reviewing ${clause.clause_number} with our legal review portal, we noticed that:\n\n"${clause.quote}"\n\nAs standard market practice in Mumbai tenancy, we kindly propose amending this clause to:\n\n"Either party may terminate the agreement after the initial lock-in period by providing 60 days (2 months) advance written notice, or payment of rent in lieu thereof, without additional forfeiture."\n\nWe look forward to signing once this adjustment is incorporated.\n\nWarm regards,\nA. Kumar (Tenant)`;
+    const draft = `Subject: Proposed Amendment to ${clause.clause_number} (${clause.title}) - Tenancy Agreement\n\nDear Landlord / Property Manager,\n\nThank you for sharing the draft agreement for Flat No. 804, Sea Breeze Apartments. Upon reviewing ${clause.clause_number} with our legal review portal, we noticed that:\n\n"${clause.quote}"\n\nAs standard market practice in Indian tenancy, we kindly propose amending this clause to:\n\n"Either party may terminate the agreement after the initial lock-in period by providing 60 days (2 months) advance written notice, or payment of rent in lieu thereof, without additional forfeiture."\n\nWe look forward to signing once this adjustment is incorporated.\n\nWarm regards,\nA. Kumar (Tenant)`;
     setNegotiationDraft(draft);
     setEmailModalOpen(true);
   };
@@ -497,7 +488,7 @@ export default function LegalPortalPage() {
                 </span>
               </div>
               <div className="text-[10px] font-semibold text-[#7C859B] tracking-wider uppercase">
-                Prisma STT • Nemotron Reasoning • Timbre TTS
+                Gnani Prisma STT • Nemotron Reasoning • Timbre TTS
               </div>
             </div>
           </div>
@@ -507,17 +498,17 @@ export default function LegalPortalPage() {
             <div className="neu-inset px-3 py-1 flex items-center gap-2 text-xs font-semibold text-[#2E3440]">
               <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse"></span>
               <span>Prisma v3.0</span>
-              <span className="text-[10px] text-[#7C859B]">STT</span>
+              <span className="text-[10px] text-[#7C859B]">STT Live</span>
             </div>
             <div className="neu-inset px-3 py-1 flex items-center gap-2 text-xs font-semibold text-[#2E3440]">
               <span className="w-2 h-2 rounded-full bg-[#5D6DF6]"></span>
-              <span>Evon / Nemotron</span>
-              <span className="text-[10px] text-[#7C859B]">30B LLM</span>
+              <span>Evon 30B / Nemotron</span>
+              <span className="text-[10px] text-[#7C859B]">LLM</span>
             </div>
             <div className="neu-inset px-3 py-1 flex items-center gap-2 text-xs font-semibold text-[#2E3440]">
-              <span className="w-2 h-2 rounded-full bg-[#F59E0B]"></span>
+              <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse"></span>
               <span>Timbre v3.0</span>
-              <span className="text-[10px] text-[#7C859B]">Indic TTS</span>
+              <span className="text-[10px] text-[#7C859B]">TTS Live</span>
             </div>
             <div className="neu-inset px-3 py-1 flex items-center gap-2 text-xs font-semibold text-[#2E3440]">
               <span className="w-2 h-2 rounded-full bg-[#10B981]"></span>
@@ -526,11 +517,25 @@ export default function LegalPortalPage() {
             </div>
           </div>
 
-          {/* Right Action Bar */}
+          {/* Document Switcher & Upload */}
           <div className="flex items-center gap-3">
+            {documents.length > 1 && (
+              <select
+                value={activeDocId}
+                onChange={(e) => setActiveDocId(e.target.value)}
+                className="neu-inset px-3 py-1.5 text-xs font-bold text-[#5D6DF6] bg-transparent outline-none cursor-pointer max-w-[200px] truncate"
+              >
+                {documents.map((d) => (
+                  <option key={d.doc_id} value={d.doc_id}>
+                    {d.title}
+                  </option>
+                ))}
+              </select>
+            )}
+
             <label className="neu-btn px-3 py-2 text-xs font-bold flex items-center gap-1.5 cursor-pointer hover:text-[#5D6DF6]">
               <Upload className="w-3.5 h-3.5" />
-              <span>Upload Lease</span>
+              <span>Upload PDF</span>
               <input type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} />
             </label>
 
@@ -540,7 +545,7 @@ export default function LegalPortalPage() {
               </div>
               <div className="text-left hidden sm:block">
                 <div className="text-xs font-bold leading-tight">A. Kumar</div>
-                <div className="text-[10px] text-[#7C859B]">Mumbai Tenant</div>
+                <div className="text-[10px] text-[#7C859B]">Client Portal</div>
               </div>
             </div>
           </div>
@@ -551,7 +556,7 @@ export default function LegalPortalPage() {
       <main className="max-w-[1600px] w-full mx-auto px-4 sm:px-6 py-6 flex-1 flex flex-col">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start flex-1">
           {/* ========================================================================= */}
-          {/* LEFT 50%: CONTRACT DOCUMENT VIEWER & CLAUSE INTELLIGENCE */}
+          {/* LEFT 50%: REAL DOCUMENT VIEWER & CLAUSE INTELLIGENCE */}
           {/* ========================================================================= */}
           <div className="lg:col-span-6 flex flex-col gap-5">
             {/* Document Header & Risk Banner */}
@@ -563,10 +568,10 @@ export default function LegalPortalPage() {
                   </div>
                   <div>
                     <h2 className="text-sm font-bold tracking-tight">
-                      {activeDoc?.title || "Andheri West Residential Lease Agreement.pdf"}
+                      {activeDoc?.title || "Residential Tenancy Agreement.pdf"}
                     </h2>
                     <p className="text-[11px] text-[#7C859B]">
-                      {activeDoc?.total_clauses || 9} Clauses Parsed • Maharashtra Model Tenancy
+                      {activeDoc?.total_clauses || 0} Clauses Extracted via PyMuPDF • Indexed in Qdrant
                     </p>
                   </div>
                 </div>
@@ -579,7 +584,7 @@ export default function LegalPortalPage() {
                       activeTab === "clauses" ? "neu-btn font-bold text-[#5D6DF6]" : "text-[#7C859B]"
                     }`}
                   >
-                    Structured Clauses
+                    Parsed Clauses
                   </button>
                   <button
                     onClick={() => setActiveTab("pdf")}
@@ -592,175 +597,127 @@ export default function LegalPortalPage() {
                 </div>
               </div>
 
-              {/* Risk Score Summary Bar */}
+              {/* Real Risk Summary Cards */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="neu-sm p-3 text-center">
                   <div className="text-[10px] uppercase font-bold text-[#7C859B]">Overall Risk</div>
                   <div className="text-2xl font-black text-[#EF4444] mt-0.5">
-                    {activeDoc?.overall_risk_score || 68}
+                    {activeDoc?.overall_risk_score ?? "--"}
                     <span className="text-xs font-normal text-[#7C859B]">/100</span>
                   </div>
                 </div>
                 <div className="neu-sm p-3 text-center">
                   <div className="text-[10px] uppercase font-bold text-[#EF4444]">High Risk</div>
                   <div className="text-2xl font-black text-[#EF4444] mt-0.5">
-                    {activeDoc?.high_risk_count ?? 1}
+                    {activeDoc?.high_risk_count ?? 0}
                   </div>
                 </div>
                 <div className="neu-sm p-3 text-center">
                   <div className="text-[10px] uppercase font-bold text-[#F59E0B]">Medium Risk</div>
                   <div className="text-2xl font-black text-[#F59E0B] mt-0.5">
-                    {activeDoc?.medium_risk_count ?? 2}
+                    {activeDoc?.medium_risk_count ?? 0}
                   </div>
                 </div>
                 <div className="neu-sm p-3 text-center">
                   <div className="text-[10px] uppercase font-bold text-[#10B981]">Standard/Safe</div>
                   <div className="text-2xl font-black text-[#10B981] mt-0.5">
-                    {activeDoc?.safe_count ?? 6}
+                    {activeDoc?.safe_count ?? 0}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* View Body: Either Structured Clauses or Original PDF */}
+            {/* View Body: Either Real Extracted Clauses or Original PDF */}
             {activeTab === "clauses" ? (
               <div className="flex flex-col gap-4 max-h-[750px] overflow-y-auto pr-1">
-                {(activeDoc?.clauses || [
-                  {
-                    clause_number: "Clause 8.2",
-                    title: "Lock-in Period & Early Termination Penalty",
-                    page_number: 2,
-                    risk_level: "High Risk",
-                    risk_badge: "HIGH RISK",
-                    quote:
-                      "Tenant shall not terminate this agreement before 24 months. Early exit will attract a penalty equal to 6 months rent, irrespective of notice period served.",
-                    advice:
-                      "6 months penalty is unusually harsh. Standard in Mumbai is 2–3 months notice. Negotiate this down before signing.",
-                    clause_id: "sample_andheri_lease_c_8_2"
-                  },
-                  {
-                    clause_number: "Clause 12.1",
-                    title: "Security Deposit Refund Timeline",
-                    page_number: 2,
-                    risk_level: "Medium Risk",
-                    risk_badge: "MEDIUM",
-                    quote:
-                      "Security deposit of INR 2,40,000 shall be held without interest and refunded within 90 days of vacating after adjusting unpaid utility dues.",
-                    advice:
-                      "90 days refund timeline is excessive. Model Tenancy Act recommends refund upon surrender of physical keys.",
-                    clause_id: "sample_andheri_lease_c_12_1"
-                  },
-                  {
-                    clause_number: "Clause 2.1",
-                    title: "Monthly Rent & Escalation",
-                    page_number: 1,
-                    risk_level: "Medium Risk",
-                    risk_badge: "MEDIUM",
-                    quote:
-                      "The Lessee shall pay a monthly lease rent of INR 40,000. The rent shall escalate by 10% after completion of 12 months.",
-                    advice:
-                      "10% annual escalation adds compound rental burden. Typical metropolitan benchmark is 5%–7%.",
-                    clause_id: "sample_andheri_lease_c_2_1"
-                  },
-                  {
-                    clause_number: "Clause 4.3",
-                    title: "Maintenance Charges & Society Dues",
-                    page_number: 1,
-                    risk_level: "Safe",
-                    risk_badge: "SAFE",
-                    quote:
-                      "The Lessee shall pay monthly society maintenance of INR 4,500 directly to the Sea Breeze Co-operative Housing Society office.",
-                    advice:
-                      "Clear and standard direct society payment terms.",
-                    clause_id: "sample_andheri_lease_c_4_3"
-                  },
-                  {
-                    clause_number: "Clause 19.1",
-                    title: "Stamp Duty & Registration Costs",
-                    page_number: 3,
-                    risk_level: "Safe",
-                    risk_badge: "SAFE",
-                    quote:
-                      "The stamp duty, e-registration fee, and documentation charges shall be borne equally (50:50) by the Lessor and the Lessee.",
-                    advice:
-                      "Standard 50:50 cost sharing for Maharashtra Rent Control compliance.",
-                    clause_id: "sample_andheri_lease_c_19_1"
-                  }
-                ]).map((cl: Clause, idx: number) => {
-                  const cId = cl.clause_id || cl.id || cl.clause_number.replace(/\s+/g, "_");
-                  const isHighlighted = highlightedClauseId === cId || highlightedClauseId === cl.clause_number;
+                {isLoadingDoc ? (
+                  <div className="neu p-10 flex flex-col items-center justify-center gap-3 text-center">
+                    <Loader2 className="w-8 h-8 animate-spin text-[#5D6DF6]" />
+                    <p className="text-xs font-bold text-[#7C859B]">
+                      Parsing document clauses with PyMuPDF & loading vectors...
+                    </p>
+                  </div>
+                ) : activeDoc?.clauses && activeDoc.clauses.length > 0 ? (
+                  activeDoc.clauses.map((cl: Clause, idx: number) => {
+                    const cId = cl.clause_id || cl.id || cl.clause_number.replace(/\s+/g, "_");
+                    const isHighlighted = highlightedClauseId === cId || highlightedClauseId === cl.clause_number;
 
-                  const badgeBg =
-                    cl.risk_level === "High Risk"
-                      ? "bg-red-100 text-red-700 border-red-300"
-                      : cl.risk_level === "Medium Risk"
-                      ? "bg-amber-100 text-amber-800 border-amber-300"
-                      : "bg-emerald-100 text-emerald-800 border-emerald-300";
+                    const badgeBg =
+                      cl.risk_level === "High Risk"
+                        ? "bg-red-100 text-red-700 border-red-300"
+                        : cl.risk_level === "Medium Risk"
+                        ? "bg-amber-100 text-amber-800 border-amber-300"
+                        : "bg-emerald-100 text-emerald-800 border-emerald-300";
 
-                  return (
-                    <div
-                      key={idx}
-                      ref={(el) => {
-                        clauseRefs.current[cId] = el;
-                        clauseRefs.current[cl.clause_number] = el;
-                      }}
-                      className={`neu p-5 transition-all duration-300 ${
-                        isHighlighted ? "neu-highlight bg-[#F4F6FB]" : ""
-                      }`}
-                    >
-                      {/* Clause Top */}
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-sm text-[#2E3440]">{cl.clause_number}</span>
-                            <span className="text-xs text-[#7C859B]">• Page {cl.page_number}</span>
+                    return (
+                      <div
+                        key={idx}
+                        ref={(el) => {
+                          clauseRefs.current[cId] = el;
+                          clauseRefs.current[cl.clause_number] = el;
+                        }}
+                        className={`neu p-5 transition-all duration-300 ${
+                          isHighlighted ? "neu-highlight bg-[#F4F6FB]" : ""
+                        }`}
+                      >
+                        {/* Clause Top */}
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-sm text-[#2E3440]">{cl.clause_number}</span>
+                              <span className="text-xs text-[#7C859B]">• Page {cl.page_number}</span>
+                            </div>
+                            <h4 className="text-sm font-semibold text-[#475569] mt-0.5">{cl.title}</h4>
                           </div>
-                          <h4 className="text-sm font-semibold text-[#475569] mt-0.5">{cl.title}</h4>
+                          <span className={`text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full border ${badgeBg}`}>
+                            ● {cl.risk_badge || cl.risk_level}
+                          </span>
                         </div>
-                        <span className={`text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full border ${badgeBg}`}>
-                          ● {cl.risk_badge || cl.risk_level}
-                        </span>
-                      </div>
 
-                      {/* Exact Quote */}
-                      <div className="neu-inset p-3 my-3 text-xs leading-relaxed text-[#4B5563] italic border-l-2 border-[#5D6DF6]">
-                        “{cl.quote}”
-                      </div>
+                        {/* Real Verbatim Quote */}
+                        <div className="neu-inset p-3 my-3 text-xs leading-relaxed text-[#4B5563] italic border-l-2 border-[#5D6DF6]">
+                          “{cl.quote}”
+                        </div>
 
-                      {/* Evon Insight */}
-                      <p className="text-xs text-[#2E3440] leading-relaxed">
-                        <strong className="text-[#5D6DF6] font-bold">Evon says: </strong>
-                        {cl.advice || cl.evon_insight || "Review against standard statutory benchmarks."}
-                      </p>
+                        {/* Evon Insight */}
+                        <p className="text-xs text-[#2E3440] leading-relaxed">
+                          <strong className="text-[#5D6DF6] font-bold">Evon says: </strong>
+                          {cl.advice || cl.evon_insight || "Review against standard statutory benchmarks."}
+                        </p>
 
-                      {/* Action buttons */}
-                      <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/60">
-                        {cl.risk_level !== "Safe" && (
+                        {/* Actions */}
+                        <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/60">
+                          {cl.risk_level !== "Safe" && (
+                            <button
+                              onClick={() => openNegotiationModal(cl)}
+                              className="neu-btn px-3 py-1.5 text-xs font-bold text-[#5D6DF6] hover:bg-[#5D6DF6] hover:text-white flex items-center gap-1"
+                            >
+                              <span>Negotiate Clause</span>
+                              <ArrowRight className="w-3 h-3" />
+                            </button>
+                          )}
                           <button
-                            onClick={() => openNegotiationModal(cl)}
-                            className="neu-btn px-3 py-1.5 text-xs font-bold text-[#5D6DF6] hover:bg-[#5D6DF6] hover:text-white flex items-center gap-1"
+                            onClick={() => handleSendTextQuery(`Explain ${cl.clause_number} and how it impacts me.`)}
+                            className="neu-btn px-3 py-1.5 text-xs font-semibold text-[#7C859B] hover:text-[#2E3440] flex items-center gap-1"
                           >
-                            <span>Negotiate Clause</span>
-                            <ArrowRight className="w-3 h-3" />
+                            <Volume2 className="w-3 h-3" />
+                            <span>Ask Timbre</span>
                           </button>
-                        )}
-                        <button
-                          onClick={() => handleSendTextQuery(`Explain ${cl.clause_number} and how it impacts me.`)}
-                          className="neu-btn px-3 py-1.5 text-xs font-semibold text-[#7C859B] hover:text-[#2E3440] flex items-center gap-1"
-                        >
-                          <Volume2 className="w-3 h-3" />
-                          <span>Ask Timbre</span>
-                        </button>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                ) : (
+                  <div className="neu p-10 text-center text-xs text-[#7C859B]">
+                    No clauses detected in this document. Upload a contract to begin.
+                  </div>
+                )}
               </div>
             ) : (
-              /* Original PDF Viewer Pane */
+              /* Original PDF Viewer */
               <div className="neu p-2 h-[750px] flex flex-col">
                 <div className="p-2 flex items-center justify-between text-xs text-[#7C859B] border-b border-white/60">
-                  <span>Interactive PDF Viewer (PyMuPDF Extracted Source)</span>
+                  <span>Interactive PDF Document View</span>
                   <a
                     href={`${API_BASE}/api/documents/${activeDocId}/pdf`}
                     target="_blank"
@@ -781,10 +738,10 @@ export default function LegalPortalPage() {
           </div>
 
           {/* ========================================================================= */}
-          {/* RIGHT 50%: VOICE ASSISTANT & REAL-TIME INTELLIGENCE PORTAL */}
+          {/* RIGHT 50%: LIVE VOICE ASSISTANT & REAL-TIME INTELLIGENCE PORTAL */}
           {/* ========================================================================= */}
           <div className="lg:col-span-6 flex flex-col gap-5">
-            {/* BIG NEUMORPHIC VOICE RECORDER CARD */}
+            {/* LIVE VOICE RECORDER CARD */}
             <div className="neu p-6 flex flex-col items-center text-center relative overflow-hidden">
               <div className="w-full flex items-center justify-between mb-4">
                 <div className="text-left">
@@ -793,18 +750,31 @@ export default function LegalPortalPage() {
                     <span>Voice Query Assistant</span>
                   </h3>
                   <p className="text-xs text-[#2E3440] font-medium">
-                    Speak in English or Regional Indic Languages
+                    Speaks in English or Regional Indic Languages via Timbre v3.0
                   </p>
                 </div>
 
-                {/* Language Selector */}
+                {/* Voice & Language Dropdowns */}
                 <div className="flex items-center gap-2">
+                  <select
+                    value={voice}
+                    onChange={(e) => setVoice(e.target.value)}
+                    className="neu-inset px-2.5 py-1 text-xs font-bold text-[#5D6DF6] bg-transparent outline-none cursor-pointer"
+                    title="Timbre Voice Model"
+                  >
+                    {TIMBRE_VOICES.map((v) => (
+                      <option key={v.name} value={v.name}>
+                        {v.name} ({v.gender})
+                      </option>
+                    ))}
+                  </select>
+
                   <select
                     value={languageCode}
                     onChange={(e) => setLanguageCode(e.target.value)}
                     className="neu-inset px-2.5 py-1 text-xs font-bold text-[#5D6DF6] bg-transparent outline-none cursor-pointer"
                   >
-                    <option value="indic-auto">Indic-Auto (Detect)</option>
+                    <option value="indic-auto">Indic-Auto</option>
                     <option value="en-IN">English (India)</option>
                     <option value="hi-IN">Hindi (हिन्दी)</option>
                     <option value="mr-IN">Marathi (मराठी)</option>
@@ -815,7 +785,7 @@ export default function LegalPortalPage() {
                 </div>
               </div>
 
-              {/* Central Mic Button with Neumorphic Pulse */}
+              {/* Central Mic Button */}
               <div className="my-4 flex flex-col items-center justify-center">
                 <div className="relative">
                   {isRecording && (
@@ -848,40 +818,19 @@ export default function LegalPortalPage() {
                   </button>
                 </div>
 
-                {/* Waveform Canvas */}
+                {/* Real-time Waveform Canvas */}
                 <div className="w-full max-w-[320px] h-10 mt-3 flex items-center justify-center">
                   {isRecording ? (
                     <canvas ref={canvasRef} width={300} height={40} className="w-full h-full" />
                   ) : (
                     <p className="text-xs text-[#7C859B] italic">
-                      Tap mic and ask e.g. "What happens if I terminate early?"
+                      Tap mic and speak your contract question in English or regional language
                     </p>
                   )}
                 </div>
-
-                {/* If audio recorded, show query trigger button */}
-                {audioBlob && !isRecording && (
-                  <div className="mt-3 flex items-center gap-2">
-                    <button
-                      onClick={() => handleSendVoiceQuery()}
-                      disabled={isProcessing}
-                      className="neu-primary px-5 py-2 text-xs font-bold rounded-full flex items-center gap-1.5 shadow-md animate-bounce"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>Process Voice with Prisma STT</span>
-                    </button>
-                    <button
-                      onClick={() => setAudioBlob(null)}
-                      className="neu-btn p-2 text-xs text-[#7C859B]"
-                      title="Discard"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                )}
               </div>
 
-              {/* Quick Questions Chips */}
+              {/* Suggested Prompts */}
               <div className="w-full mt-3 pt-3 border-t border-white/60">
                 <div className="text-[10px] uppercase font-bold text-[#7C859B] mb-2 text-left">
                   Suggested Prompts
@@ -900,11 +849,11 @@ export default function LegalPortalPage() {
                 </div>
               </div>
 
-              {/* Text Input Fallback Bar */}
+              {/* Text Input Bar */}
               <div className="w-full mt-4 neu-inset p-1.5 flex items-center gap-2">
                 <input
                   type="text"
-                  placeholder="Or type your legal query here..."
+                  placeholder="Or type your legal question here..."
                   value={textInput}
                   onChange={(e) => setTextInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleSendTextQuery()}
@@ -926,24 +875,24 @@ export default function LegalPortalPage() {
               <div className="neu p-5 flex items-center justify-center gap-3 animate-pulse">
                 <div className="w-4 h-4 border-2 border-[#5D6DF6] border-t-transparent rounded-full animate-spin"></div>
                 <div className="text-xs font-bold text-[#5D6DF6]">
-                  Prisma STT transcribing audio → Evon reasoning over clauses → Timbre synthesizing voice...
+                  Prisma STT transcribing → RAG matching clauses → Timbre synthesizing natural voice...
                 </div>
               </div>
             )}
 
-            {/* RESPONSE INTELLIGENCE CARD */}
+            {/* REAL RESPONSE INTELLIGENCE CARD */}
             {latestResponse && (
               <div className="neu p-6 flex flex-col gap-4">
                 {/* User Query Transcribed Badge */}
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/60 pb-3">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-[#5D6DF6]"></span>
+                    <span className="w-2 h-2 rounded-full bg-[#10B981]"></span>
                     <span className="text-xs font-bold text-[#7C859B] uppercase tracking-wider">
-                      Transcribed Query (Prisma v3.0)
+                      Transcribed Speech (Prisma v3.0)
                     </span>
                   </div>
                   <span className="text-[11px] font-bold text-[#5D6DF6] bg-[#5D6DF6]/10 px-2 py-0.5 rounded-full">
-                    {latestResponse.detected_language} • {Math.round((latestResponse.confidence || 0.95) * 100)}% match
+                    {latestResponse.detected_language} • Live API
                   </span>
                 </div>
                 <div className="text-sm font-semibold text-[#2E3440] italic">
@@ -959,7 +908,9 @@ export default function LegalPortalPage() {
                       </div>
                       <div>
                         <div className="text-xs font-bold text-[#2E3440]">Timbre Spoken Answer</div>
-                        <div className="text-[10px] text-[#7C859B]">Natural Indic Voice ({latestResponse.tts_voice || "Nalini"})</div>
+                        <div className="text-[10px] text-[#7C859B]">
+                          Natural Voice: {latestResponse.tts_voice || voice} • Live Gnani Model
+                        </div>
                       </div>
                     </div>
 

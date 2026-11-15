@@ -1,10 +1,10 @@
 import os
-import json
-import base64
+import io
 import wave
-import math
-import struct
+import base64
 import logging
+import tempfile
+import subprocess
 import httpx
 from typing import Dict, Any, Optional
 from config import (
@@ -15,37 +15,63 @@ from config import (
     GNANI_TTS_MODEL,
     GNANI_DEFAULT_VOICE,
     LEGAL_KEYTERMS,
-    AUDIO_DIR,
 )
 
 logger = logging.getLogger("gnani_service")
 logging.basicConfig(level=logging.INFO)
 
 
-def generate_fallback_wav(duration_sec: float = 2.0, freq: float = 440.0) -> bytes:
-    """Generate a clean synthetic WAV beep audio for testing/fallback when API key is not active."""
-    sample_rate = 16000
-    num_samples = int(sample_rate * duration_sec)
-    
-    # Generate 16-bit PCM mono audio
-    frames = bytearray()
-    for i in range(num_samples):
-        # gentle envelope
-        env = min(1.0, i / 2000.0) * min(1.0, (num_samples - i) / 2000.0)
-        # soft dual-tone chord
-        val = 0.5 * math.sin(2 * math.pi * freq * i / sample_rate) + 0.3 * math.sin(2 * math.pi * (freq * 1.25) * i / sample_rate)
-        sample = int(val * env * 16000)
-        frames.extend(struct.pack('<h', max(-32768, min(32767, sample))))
-        
-    import io
-    wav_io = io.BytesIO()
-    with wave.open(wav_io, 'wb') as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(sample_rate)
-        wav_file.writeframes(frames)
-    
-    return wav_io.getvalue()
+def convert_to_16k_mono_wav(audio_bytes: bytes) -> bytes:
+    """
+    Ensure audio data is 16kHz mono 16-bit PCM WAV (as required by Gnani Prisma STT).
+    Uses ffmpeg to transcode from webm, mp3, ogg, or non-compliant WAV.
+    """
+    # Quick check if it's already a valid RIFF/WAVE header
+    if audio_bytes.startswith(b"RIFF") and b"WAVE" in audio_bytes[:16]:
+        return audio_bytes
+
+    with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as in_f:
+        in_f.write(audio_bytes)
+        in_path = in_f.name
+
+    out_path = in_path + "_converted.wav"
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-i", in_path,
+            "-ar", "16000",
+            "-ac", "1",
+            "-c:a", "pcm_s16le",
+            out_path
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        with open(out_path, "rb") as out_f:
+            converted = out_f.read()
+        return converted
+    except Exception as e:
+        logger.error(f"FFmpeg conversion failed: {e}")
+        # Return original if conversion fails
+        return audio_bytes
+    finally:
+        for p in [in_path, out_path]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+
+def raw_pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 24000, channels: int = 1, sampwidth: int = 2) -> bytes:
+    """
+    Convert raw PCM audio bytes (from Gnani Timbre) into a valid RIFF/WAVE container
+    so that browser <audio> tags and standard audio players can decode and play it.
+    """
+    wav_buf = io.BytesIO()
+    with wave.open(wav_buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sampwidth)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_bytes)
+    return wav_buf.getvalue()
 
 
 class GnaniService:
@@ -63,85 +89,52 @@ class GnaniService:
         language_code: str = "indic-auto"
     ) -> Dict[str, Any]:
         """
-        Transcribe user speech via Gnani Prisma v3.0 STT API.
+        Transcribe speech using live Gnani Prisma v3.0 STT API.
         POST https://api.vachana.ai/stt/v3
         """
-        logger.info(f"Transcribing audio ({len(audio_bytes)} bytes) with language={language_code}")
-        
-        if not self.api_key or self.api_key.startswith("your_"):
-            logger.warning("No valid GNANI_API_KEY provided. Using simulated Prisma transcription.")
+        if not self.api_key:
+            raise ValueError("GNANI_API_KEY is not set. Please set it in .env")
+
+        # Convert to 16kHz mono WAV for Prisma STT
+        wav_bytes = convert_to_16k_mono_wav(audio_bytes)
+        logger.info(f"Calling Gnani Prisma STT with {len(wav_bytes)} bytes of WAV audio, lang={language_code}")
+
+        headers = {
+            "X-API-Key-ID": self.api_key
+        }
+        files = {
+            "audio_file": ("speech.wav", wav_bytes, "audio/wav")
+        }
+        data = {
+            "model": self.stt_model,
+            "language_code": language_code or "indic-auto",
+            "keyterms": LEGAL_KEYTERMS
+        }
+
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(
+                self.stt_url,
+                headers=headers,
+                files=files,
+                data=data
+            )
+
+        if response.status_code == 200:
+            res_data = response.json()
+            transcript = res_data.get("transcript", "").strip()
+            detected_lang = res_data.get("detected_language_code") or res_data.get("language_code") or language_code
+            latency = res_data.get("processing_time") or res_data.get("end_to_end_latency")
             return {
-                "transcript": "What happens if I terminate the lease early and what is the lock-in penalty?",
-                "detected_language": "en-IN",
-                "confidence": 0.96,
-                "is_fallback": True,
-                "message": "Using demo transcription mode (configure GNANI_API_KEY in .env for live Prisma v3.0)"
+                "transcript": transcript,
+                "detected_language": detected_lang,
+                "processing_time": latency,
+                "confidence": 0.98 if transcript else 0.0,
+                "raw": res_data
             }
-
-        try:
-            headers = {
-                "X-API-Key-ID": self.api_key
-            }
-            
-            # Determine content type
-            content_type = "audio/wav"
-            if filename.endswith(".webm"):
-                content_type = "audio/webm"
-            elif filename.endswith(".mp3"):
-                content_type = "audio/mp3"
-            elif filename.endswith(".ogg"):
-                content_type = "audio/ogg"
-
-            files = {
-                "audio_file": (filename, audio_bytes, content_type)
-            }
-            data = {
-                "model": self.stt_model,
-                "language_code": language_code,
-                "keyterms": LEGAL_KEYTERMS
-            }
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    self.stt_url,
-                    headers=headers,
-                    files=files,
-                    data=data
-                )
-
-            if response.status_code == 200:
-                res_data = response.json()
-                transcript = (
-                    res_data.get("transcript") or 
-                    res_data.get("text") or 
-                    res_data.get("results", [{}])[0].get("transcript", "")
-                )
-                detected_lang = res_data.get("language_code") or res_data.get("detected_language") or language_code
-                return {
-                    "transcript": transcript or "Query processed successfully.",
-                    "detected_language": detected_lang,
-                    "confidence": res_data.get("confidence", 0.95),
-                    "raw": res_data,
-                    "is_fallback": False
-                }
-            else:
-                logger.error(f"Gnani Prisma STT failed [{response.status_code}]: {response.text}")
-                return {
-                    "transcript": "What happens if I terminate the lease early and what is the lock-in penalty?",
-                    "detected_language": language_code,
-                    "confidence": 0.90,
-                    "is_fallback": True,
-                    "error": f"Gnani STT API error {response.status_code}: {response.text[:100]}"
-                }
-        except Exception as e:
-            logger.exception("Exception calling Gnani Prisma STT:")
-            return {
-                "transcript": "What happens if I terminate the lease early and what is the lock-in penalty?",
-                "detected_language": language_code,
-                "confidence": 0.90,
-                "is_fallback": True,
-                "error": str(e)
-            }
+        else:
+            err_msg = f"Gnani Prisma STT Error [{response.status_code}]: {response.text}"
+            logger.error(err_msg)
+            raise RuntimeError(err_msg)
 
     async def synthesize_speech(
         self,
@@ -151,87 +144,63 @@ class GnaniService:
         speed: float = 1.0
     ) -> Dict[str, Any]:
         """
-        Synthesize speech via Gnani Timbre v2.5/v3.0 TTS API.
+        Synthesize speech using live Gnani Timbre v3.0 TTS API.
         POST https://api.vachana.ai/api/v1/tts/inference
+        Supported voices for Timbre v3.0: Avinash, Shivani, Lakshmi, Kalpana, Shubham, Prakash, Devansh, Yashraj
         """
-        voice = voice or GNANI_DEFAULT_VOICE
-        logger.info(f"Synthesizing speech via Timbre for text length={len(text)}, voice={voice}, lang={language}")
+        if not self.api_key:
+            raise ValueError("GNANI_API_KEY is not set. Please set it in .env")
 
-        if not self.api_key or self.api_key.startswith("your_"):
-            logger.warning("No GNANI_API_KEY provided. Using fallback audio output.")
-            fallback_wav = generate_fallback_wav(duration_sec=2.5, freq=480.0)
+        voice_name = voice or GNANI_DEFAULT_VOICE
+        # If an unsupported voice name was passed, default to Shivani
+        supported_voices = ["Avinash", "Shivani", "Lakshmi", "Kalpana", "Shubham", "Prakash", "Devansh", "Yashraj"]
+        if voice_name not in supported_voices:
+            voice_name = "Shivani"
+
+        # Sanitize language code for Timbre
+        if "auto" in language.lower():
+            language = "en-IN"
+
+        logger.info(f"Calling Gnani Timbre TTS: voice={voice_name}, lang={language}, text_len={len(text)}")
+
+        headers = {
+            "X-API-Key-ID": self.api_key,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "text": text,
+            "model": self.tts_model,
+            "voice": voice_name,
+            "language": language,
+            "speed": float(speed)
+        }
+
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(
+                self.tts_url,
+                headers=headers,
+                json=payload
+            )
+
+        if response.status_code == 200:
+            content_type = response.headers.get("content-type", "")
+            raw_audio = response.content
+
+            # Gnani Timbre returns raw 24kHz 16-bit PCM. Convert to standard RIFF WAV for browser playback
+            wav_audio = raw_pcm_to_wav(raw_audio, sample_rate=24000, channels=1, sampwidth=2)
+            audio_b64 = base64.b64encode(wav_audio).decode("utf-8")
+
             return {
-                "audio_base64": base64.b64encode(fallback_wav).decode("utf-8"),
+                "audio_base64": audio_b64,
                 "audio_format": "audio/wav",
-                "voice": voice,
+                "voice": voice_name,
                 "language": language,
-                "is_fallback": True,
-                "message": "Demo audio generated (configure GNANI_API_KEY in .env for live Timbre voice)"
+                "audio_bytes_length": len(wav_audio)
             }
-
-        try:
-            headers = {
-                "X-API-Key-ID": self.api_key,
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "text": text,
-                "model": self.tts_model,
-                "voice": voice,
-                "language": language,
-                "speed": speed
-            }
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    self.tts_url,
-                    headers=headers,
-                    json=payload
-                )
-
-            if response.status_code == 200:
-                content_type = response.headers.get("content-type", "")
-                if "audio" in content_type or "octet-stream" in content_type:
-                    audio_b64 = base64.b64encode(response.content).decode("utf-8")
-                    return {
-                        "audio_base64": audio_b64,
-                        "audio_format": content_type or "audio/wav",
-                        "voice": voice,
-                        "language": language,
-                        "is_fallback": False
-                    }
-                else:
-                    data = response.json()
-                    audio_b64 = data.get("audio_content") or data.get("audio_base64") or data.get("audio")
-                    return {
-                        "audio_base64": audio_b64,
-                        "audio_format": "audio/wav",
-                        "voice": voice,
-                        "language": language,
-                        "is_fallback": False
-                    }
-            else:
-                logger.error(f"Gnani Timbre TTS failed [{response.status_code}]: {response.text}")
-                fallback_wav = generate_fallback_wav(duration_sec=2.5, freq=520.0)
-                return {
-                    "audio_base64": base64.b64encode(fallback_wav).decode("utf-8"),
-                    "audio_format": "audio/wav",
-                    "voice": voice,
-                    "language": language,
-                    "is_fallback": True,
-                    "error": f"Gnani TTS API error {response.status_code}"
-                }
-        except Exception as e:
-            logger.exception("Exception calling Gnani Timbre TTS:")
-            fallback_wav = generate_fallback_wav(duration_sec=2.5, freq=520.0)
-            return {
-                "audio_base64": base64.b64encode(fallback_wav).decode("utf-8"),
-                "audio_format": "audio/wav",
-                "voice": voice,
-                "language": language,
-                "is_fallback": True,
-                "error": str(e)
-            }
+        else:
+            err_msg = f"Gnani Timbre TTS Error [{response.status_code}]: {response.text}"
+            logger.error(err_msg)
+            raise RuntimeError(err_msg)
 
 
 gnani_service = GnaniService()

@@ -54,13 +54,13 @@ class TextQueryRequest(BaseModel):
     query: str
     doc_id: Optional[str] = "sample_andheri_lease"
     language_code: Optional[str] = "indic-auto"
-    voice: Optional[str] = "Nalini"
+    voice: Optional[str] = "Shivani"
 
 
 class TTSRequest(BaseModel):
     text: str
     language: Optional[str] = "en-IN"
-    voice: Optional[str] = "Nalini"
+    voice: Optional[str] = "Shivani"
     speed: Optional[float] = 1.0
 
 
@@ -155,7 +155,7 @@ async def query_by_voice(
     audio_file: UploadFile = File(...),
     doc_id: Optional[str] = Form("sample_andheri_lease"),
     language_code: Optional[str] = Form("indic-auto"),
-    voice: Optional[str] = Form("Nalini")
+    voice: Optional[str] = Form("Shivani")
 ):
     """
     End-to-end voice pipeline:

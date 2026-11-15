@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 RISK_RULES = [
     {
         "keywords": ["penalty", "lock-in", "early exit", "early termination", "forfeit"],
-        "condition": lambda text: any(p in text.lower() for p in ["6 months", "forfeited in full", "no refund", "irrespective"]),
+        "condition": lambda text: any(p in text.lower() for p in ["6 months", "forfeited in full", "no refund", "irrespective", "penalty equal"]),
         "level": "High Risk",
         "badge": "HIGH RISK",
         "advice": "High penalty detected. In Indian metropolitan tenancy, 1 to 2 months notice or rent penalty is customary. This clause is heavily biased towards the lessor and should be negotiated down."
@@ -52,7 +52,7 @@ class RAGService:
         self.embedding_model_name = "BAAI/bge-small-en-v1.5"
         self._embedder: Optional[TextEmbedding] = None
         
-        # Initialize local Qdrant client (in-memory for speed & zero external dependency)
+        # Local Qdrant client (in-memory)
         self.qdrant = QdrantClient(":memory:")
         self.collection_name = "legal_clauses"
         self._collection_initialized = False
@@ -70,16 +70,17 @@ class RAGService:
             self._embedder = TextEmbedding(model_name=self.embedding_model_name)
             logger.info("FastEmbed model initialized successfully.")
         except Exception as e:
-            logger.warning(f"Could not load FastEmbed ({e}). Falling back to simple lexical search.")
+            logger.warning(f"Could not load FastEmbed ({e}). Falling back to simple search.")
             self._embedder = None
 
     def _ensure_collection(self):
         if not self._collection_initialized:
             try:
-                self.qdrant.recreate_collection(
-                    collection_name=self.collection_name,
-                    vectors_config=VectorParams(size=384, distance=Distance.COSINE)
-                )
+                if not self.qdrant.collection_exists(self.collection_name):
+                    self.qdrant.create_collection(
+                        collection_name=self.collection_name,
+                        vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+                    )
                 self._collection_initialized = True
             except Exception as e:
                 logger.error(f"Error initializing Qdrant collection: {e}")
@@ -91,7 +92,6 @@ class RAGService:
                 return embeddings[0].tolist()
             except Exception as e:
                 logger.error(f"Embedder error: {e}")
-        # Deterministic 384-dim pseudo-vector fallback
         vec = [0.0] * 384
         for i, char in enumerate(text[:384]):
             vec[i] = (ord(char) % 100) / 100.0
@@ -127,6 +127,10 @@ class RAGService:
             current_body = []
 
             for line in lines:
+                # Skip statutory Act citations like "Section 55 of Maharashtra Rent Control Act"
+                if any(w in line.lower() for w in ["under section", "under article", "control act", "act, 19", "act, 20"]):
+                    continue
+
                 match = clause_regex.search(line)
                 if match:
                     if current_clause:
@@ -135,7 +139,10 @@ class RAGService:
                         clauses.append(current_clause)
                     
                     c_num = match.group(1).strip()
-                    c_title = match.group(2).strip()
+                    raw_title = match.group(2).strip()
+                    # Clean leading symbols from title like em-dashes
+                    c_title = re.sub(r'^[—–\-\s:]+', '', raw_title).strip()
+                    
                     current_clause = {
                         "id": f"{doc_id}_c_{c_num.replace('.', '_')}",
                         "clause_number": f"Clause {c_num}",
@@ -148,7 +155,7 @@ class RAGService:
                     }
                     current_body = []
                 elif current_clause:
-                    if line.strip():
+                    if line.strip() and not line.strip().startswith("RESIDENTIAL LEAVE"):
                         current_body.append(line.strip())
 
             if current_clause:
@@ -158,7 +165,7 @@ class RAGService:
 
         doc.close()
 
-        # If no explicit "Clause" tags found, chunk by paragraphs/sections
+        # If no explicit "Clause" tags found, chunk by paragraphs
         if not clauses:
             clauses = self._fallback_chunking(pages_content, doc_id)
 
@@ -198,8 +205,7 @@ class RAGService:
         med_risk_count = sum(1 for c in clauses if c.get("risk_level") == "Medium Risk")
         safe_count = len(clauses) - (high_risk_count + med_risk_count)
         
-        # Risk score calculation from 0 to 100
-        overall_risk_score = min(98, 20 + (high_risk_count * 18) + (med_risk_count * 6))
+        overall_risk_score = min(98, 20 + (high_risk_count * 20) + (med_risk_count * 8))
         if high_risk_count == 0 and med_risk_count == 0:
             overall_risk_score = 15
 
@@ -255,49 +261,78 @@ class RAGService:
 
     def search_relevant_clauses(self, query: str, doc_id: Optional[str] = None, top_k: int = 4) -> List[Dict[str, Any]]:
         """
-        Search vector database for top matching clauses for the user query.
+        Hybrid semantic vector search + keyword boosting on Qdrant.
         """
         query_vec = self.compute_embedding(query)
+        q_lower = query.lower()
+        q_words = set(w for w in re.findall(r'\b[a-zA-Z]{3,}\b', q_lower))
+
+        candidate_map = {}
+
         try:
-            results = self.qdrant.search(
+            # Query vector database
+            res = self.qdrant.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_vec,
-                limit=top_k * 2
+                query=query_vec,
+                limit=top_k * 3
             )
-            matched = []
-            for hit in results:
+            for hit in res.points:
                 payload = hit.payload
                 if doc_id and payload.get("doc_id") != doc_id:
                     continue
-                matched.append({
-                    "score": hit.score,
-                    "clause_id": payload.get("clause_id"),
+                c_id = payload.get("clause_id")
+                score = hit.score or 0.0
+                candidate_map[c_id] = {
+                    "score": score,
+                    "clause_id": c_id,
                     "clause_number": payload.get("clause_number"),
                     "title": payload.get("title"),
                     "page_number": payload.get("page_number"),
                     "quote": payload.get("quote"),
                     "risk_level": payload.get("risk_level"),
                     "advice": payload.get("advice")
-                })
-                if len(matched) >= top_k:
-                    break
-            if matched:
-                return matched
+                }
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
 
-        # Lexical search fallback if vector search yielded nothing
-        matched = []
+        # Lexical keyword boosting on all document clauses
         target_doc = self.documents.get(doc_id) if doc_id else next(iter(self.documents.values()), None)
         if target_doc:
-            q_lower = query.lower()
             for c in target_doc.get("clauses", []):
+                c_id = c.get("id") or c.get("clause_id")
                 content = f"{c.get('clause_number', '')} {c.get('title', '')} {c.get('quote', '')}".lower()
-                if any(w in content for w in q_lower.split() if len(w) > 3):
-                    matched.append(c)
-                    if len(matched) >= top_k:
-                        break
-        return matched or (target_doc.get("clauses", [])[:top_k] if target_doc else [])
+                
+                # Count matching keywords
+                match_count = sum(1 for w in q_words if w in content)
+                keyword_boost = match_count * 0.15
+
+                # Special legal synonym boosts
+                if ("terminate" in q_lower or "early" in q_lower or "exit" in q_lower or "lock-in" in q_lower) and ("early exit" in content or "lock-in" in content or "terminate" in content):
+                    keyword_boost += 0.5
+                if ("maintenance" in q_lower or "society" in q_lower or "bill" in q_lower) and ("maintenance" in content or "society" in content):
+                    keyword_boost += 0.5
+                if ("deposit" in q_lower or "refund" in q_lower) and ("security deposit" in content or "refund" in content):
+                    keyword_boost += 0.5
+                if ("escalat" in q_lower or "increase" in q_lower) and ("escalat" in content or "increase" in content):
+                    keyword_boost += 0.5
+
+                if c_id in candidate_map:
+                    candidate_map[c_id]["score"] += keyword_boost
+                elif keyword_boost > 0:
+                    candidate_map[c_id] = {
+                        "score": 0.5 + keyword_boost,
+                        "clause_id": c_id,
+                        "clause_number": c.get("clause_number"),
+                        "title": c.get("title"),
+                        "page_number": c.get("page_number", 1),
+                        "quote": c.get("quote"),
+                        "risk_level": c.get("risk_level"),
+                        "advice": c.get("advice")
+                    }
+
+        # Sort by total score descending
+        sorted_candidates = sorted(candidate_map.values(), key=lambda x: x["score"], reverse=True)
+        return sorted_candidates[:top_k] or (target_doc.get("clauses", [])[:top_k] if target_doc else [])
 
 
 rag_service = RAGService()

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Mic,
   MicOff,
@@ -66,12 +66,41 @@ interface QueryResponse {
 
 const API_BASE = "http://localhost:8000";
 
-const QUICK_QUESTIONS = [
-  "What happens if I terminate the lease early?",
-  "Are maintenance charges included in the rent?",
-  "What is the security deposit and refund timeline?",
-  "Is there an annual rent escalation clause?"
+const DEFAULT_LEASE_QUESTIONS = [
+  "What happens if I terminate before the 24-month lock-in period?",
+  "Are society maintenance charges of ₹4,500 included in the rent?",
+  "When will my security deposit of ₹2,40,000 be refunded?",
+  "What is the annual rent escalation rate under Clause 2.1?",
+  "Is subletting or commercial use permitted under Clause 6.1?",
+  "Can I make renovations or structural alterations under Clause 15.2?",
+  "Who pays the stamp duty and e-registration charges under Clause 19.1?",
 ];
+
+function getSuggestedPrompts(clauses?: Clause[]): string[] {
+  if (!clauses || clauses.length === 0) {
+    return DEFAULT_LEASE_QUESTIONS;
+  }
+  const derived: string[] = [];
+  for (const c of clauses) {
+    const text = ((c.title || "") + " " + (c.quote || "")).toLowerCase();
+    if (text.includes("lock-in") || text.includes("terminat")) {
+      derived.push(`What happens if I terminate before the lock-in period under ${c.clause_number}?`);
+    } else if (text.includes("maintenance") || text.includes("society dues")) {
+      derived.push(`Are society maintenance charges included in rent under ${c.clause_number}?`);
+    } else if (text.includes("deposit refund") || text.includes("refund timeline") || text.includes("timeline")) {
+      derived.push(`When and how is the security deposit refunded under ${c.clause_number}?`);
+    } else if (text.includes("escalat") || text.includes("monthly rent")) {
+      derived.push(`What is the monthly rent and escalation rate in ${c.clause_number}?`);
+    } else if (text.includes("sublet") || text.includes("commercial")) {
+      derived.push(`Is subletting or commercial use permitted under ${c.clause_number}?`);
+    } else if (text.includes("alteration") || text.includes("structural")) {
+      derived.push(`Can I make structural alterations or renovations under ${c.clause_number}?`);
+    } else if (text.includes("stamp duty") || text.includes("registration")) {
+      derived.push(`Who pays stamp duty and registration under ${c.clause_number}?`);
+    }
+  }
+  return derived.length > 0 ? derived : DEFAULT_LEASE_QUESTIONS;
+}
 
 const TIMBRE_VOICES = [
   { name: "Shivani", gender: "Female", desc: "Expressive & Natural" },
@@ -144,6 +173,10 @@ export default function LegalPortalPage() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [emailModalOpen, setEmailModalOpen] = useState<boolean>(false);
   const [negotiationDraft, setNegotiationDraft] = useState<string>("");
+
+  const suggestedPrompts = useMemo(() => {
+    return getSuggestedPrompts(activeDoc?.clauses);
+  }, [activeDoc?.clauses]);
 
   // Refs
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -483,37 +516,10 @@ export default function LegalPortalPage() {
                 <span>Evon</span>
                 <span className="font-light text-[#7C859B]">+</span>
                 <span>Timbre</span>
-                <span className="text-[10px] font-bold uppercase tracking-wider bg-[#5D6DF6]/10 text-[#5D6DF6] px-2 py-0.5 rounded-full ml-1">
-                  Legal Portal
-                </span>
               </div>
               <div className="text-[10px] font-semibold text-[#7C859B] tracking-wider uppercase">
                 Gnani Prisma STT • Nemotron Reasoning • Timbre TTS
               </div>
-            </div>
-          </div>
-
-          {/* Model Status Pills */}
-          <div className="hidden lg:flex items-center gap-2">
-            <div className="neu-inset px-3 py-1 flex items-center gap-2 text-xs font-semibold text-[#2E3440]">
-              <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse"></span>
-              <span>Prisma v3.0</span>
-              <span className="text-[10px] text-[#7C859B]">STT Live</span>
-            </div>
-            <div className="neu-inset px-3 py-1 flex items-center gap-2 text-xs font-semibold text-[#2E3440]">
-              <span className="w-2 h-2 rounded-full bg-[#5D6DF6]"></span>
-              <span>Evon 30B / Nemotron</span>
-              <span className="text-[10px] text-[#7C859B]">LLM</span>
-            </div>
-            <div className="neu-inset px-3 py-1 flex items-center gap-2 text-xs font-semibold text-[#2E3440]">
-              <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse"></span>
-              <span>Timbre v3.0</span>
-              <span className="text-[10px] text-[#7C859B]">TTS Live</span>
-            </div>
-            <div className="neu-inset px-3 py-1 flex items-center gap-2 text-xs font-semibold text-[#2E3440]">
-              <span className="w-2 h-2 rounded-full bg-[#10B981]"></span>
-              <span>Qdrant + BGE</span>
-              <span className="text-[10px] text-[#7C859B]">RAG</span>
             </div>
           </div>
 
@@ -538,16 +544,6 @@ export default function LegalPortalPage() {
               <span>Upload PDF</span>
               <input type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} />
             </label>
-
-            <div className="neu flex items-center gap-2.5 px-3 py-1.5">
-              <div className="w-7 h-7 rounded-full bg-[#5D6DF6] text-white flex items-center justify-center text-xs font-bold shadow-sm">
-                AK
-              </div>
-              <div className="text-left hidden sm:block">
-                <div className="text-xs font-bold leading-tight">A. Kumar</div>
-                <div className="text-[10px] text-[#7C859B]">Client Portal</div>
-              </div>
-            </div>
           </div>
         </div>
       </header>
@@ -836,7 +832,7 @@ export default function LegalPortalPage() {
                   Suggested Prompts
                 </div>
                 <div className="flex flex-wrap gap-2 text-left">
-                  {QUICK_QUESTIONS.map((q, idx) => (
+                  {suggestedPrompts.map((q, idx) => (
                     <button
                       key={idx}
                       onClick={() => handleSendTextQuery(q)}

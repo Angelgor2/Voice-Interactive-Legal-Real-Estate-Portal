@@ -1,12 +1,36 @@
 import re
 import json
 import logging
+import urllib.parse
 import httpx
 from typing import List, Dict, Any, Optional
 from config import NVIDIA_NIM_API_KEY, NVIDIA_NIM_URL, NVIDIA_MODEL
 
 logger = logging.getLogger("llm_service")
 logging.basicConfig(level=logging.INFO)
+
+
+async def translate_text(text: str, target_lang: str, source_lang: str = "auto") -> str:
+    """Translate text reliably using Google Translate GTX endpoint."""
+    if not text or not text.strip():
+        return text
+    tl = target_lang.split("-")[0].lower()
+    sl = source_lang.split("-")[0].lower() if source_lang != "auto" else "auto"
+    if tl == sl or (sl == "en" and tl == "en"):
+        return text
+
+    try:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sl}&tl={tl}&dt=t&q={urllib.parse.quote(text)}"
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                translated = "".join([item[0] for item in data[0] if item and item[0]])
+                if translated.strip():
+                    return translated.strip()
+    except Exception as e:
+        logger.warning(f"Translation failed ({sl}->{tl}): {e}")
+    return text
 
 
 def detect_query_language(text: str) -> str:
@@ -395,6 +419,16 @@ CLAUSE_LOCALIZATIONS = {
         }
     },
     "subletting_use": {
+        "gu-IN": {
+            "spoken": "કલમ 6.1 (પૃષ્ઠ 1) મુજબ, જગ્યાનો ઉપયોગ ફક્ત રહેણાંક હેતુ માટે જ કરવામાં આવશે. પૂર્વ લેખિત મંજૂરી વિના સબલેટિંગ કે વ્યાપારી ઉપયોગ સખત પ્રતિબંધિત છે.",
+            "bullets": [
+                "કલમ 6.1: જગ્યાનો ફક્ત રહેણાંક ઉપયોગ ફરજિયાત બનાવે છે.",
+                "સબલેટિંગ પ્રતિબંધ: અન્ય કોઈને પેટા-ભાડે આપવા કે વ્યાપારી ઉપયોગ પર સંપૂર્ણ રોક.",
+                "પ્રમાણભૂત શરત: રહેણાંક ભાડા કરાર માટે આ સુરક્ષિત અને માનક જોગવાઈ છે."
+            ],
+            "advice": "જો તમે વર્ક-ફ્રોમ-હોમ કે ફ્રીલાન્સ કામ કરતા હો, તો મકાનમાલિક પાસેથી લેખિત સ્પષ્ટતા મેળવી લો.",
+            "insight": "પ્રમાણભૂત રહેણાંક ઉપયોગ કલમ: સલામત અને કાયદેસર."
+        },
         "hi-IN": {
             "spoken": "खंड 6.1 (पेज 1) के अनुसार, फ्लैट का उपयोग केवल आवासीय उद्देश्य के लिए किया जाएगा। बिना पूर्व लिखित अनुमति के सबलेटिंग या व्यावसायिक गतिविधि पूरी तरह वर्जित है।",
             "bullets": [
@@ -417,6 +451,16 @@ CLAUSE_LOCALIZATIONS = {
         }
     },
     "alterations": {
+        "gu-IN": {
+            "spoken": "કલમ 15.2 (પૃષ્ઠ 2) હેઠળ, મકાનમાલિક અને સોસાયટીની પૂર્વ લેખિત મંજૂરી વિના કોઈ મોટો માળખાકીય ફેરફાર કરી શકાશે નહીં.",
+            "bullets": [
+                "કલમ 15.2: અનધિકૃત માળખાકીય ફેરફારો અને દિવાલોમાં તોડફોડ પર પ્રતિબંધ મૂકે છે.",
+                "લેખિત મંજૂરી જરૂરી: કોઈપણ ફેરફાર કે ઇન્ટિરિયર માટે અગાઉથી પરવાનગી લેવી જરૂરી.",
+                "સુરક્ષિત જોગવાઈ: મિલકતની સુરક્ષા અને માળખાકીય સ્થિરતા માટે સામાન્ય નિયમ."
+            ],
+            "advice": "કોઈપણ મોટું ફિટિંગ કે ફેરફાર કરતા પહેલાં મકાનમાલિક પાસેથી લેખિત પરવાનગી લો.",
+            "insight": "માળખાકીય સુરક્ષા કલમ: પ્રમાણભૂત અને સલામત."
+        },
         "hi-IN": {
             "spoken": "खंड 15.2 (पेज 2) के तहत, मकान मालिक और सोसायटी की पूर्व लिखित मंजूरी के बिना कोई बड़ा ढांचागत बदलाव या लोड-बेयरिंग पिलर में ड्रिल नहीं किया जा सकता।",
             "bullets": [
@@ -439,6 +483,16 @@ CLAUSE_LOCALIZATIONS = {
         }
     },
     "stamp_duty": {
+        "gu-IN": {
+            "spoken": "કલમ 19.1 (પૃષ્ઠ 2) મુજબ, આ કરાર માટે સ્ટેમ્પ ડ્યુટી અને ઈ-રજીસ્ટ્રેશન શુલ્ક મકાનમાલિક અને ભાડૂત બંને 50:50 ના પ્રમાણમાં સરખા ભાગે ભોગવશે.",
+            "bullets": [
+                "કલમ 19.1: સરકારી સ્ટેમ્પ ડ્યુટી અને નોંધણી ખર્ચ 50:50 ના ભાગે વહેંચે છે.",
+                "કાનૂની જોગવાઈ: મહારાષ્ટ્ર ભાડા નિયંત્રણ કાયદા મુજબ બંને પક્ષો વચ્ચે ખર્ચ વહેંચવો પ્રમાણભૂત છે.",
+                "ચકાસણી: નોંધણી પૂર્ણ થયા પછી સત્તાવાર ઈ-ચલણ અને રસીદ પોતાની પાસે સાચવી રાખો."
+            ],
+            "advice": "નોંધણી પૂર્ણ થયા પછી સત્તાવાર સ્ટેમ્પવાળી નકલ અને ઈ-ચલણની અસલ રસીદ મેળવી લો.",
+            "insight": "ન્યાયી અને પ્રમાણભૂત: બંને પક્ષો દ્વારા 50:50 ખર્ચ વહેંચણી કાયદેસર અને સામાન્ય છે."
+        },
         "hi-IN": {
             "spoken": "खंड 19.1 (पेज 2) के अनुसार, स्टाम्प शुल्क और ई-रजिस्ट्रेशन का खर्च मकान मालिक और किरायेदार दोनों द्वारा समान रूप से (50:50) वहन किया जाएगा।",
             "bullets": [
@@ -539,16 +593,35 @@ class LLMService:
                 }
 
                 async with httpx.AsyncClient(timeout=45.0) as client:
-                    res = await client.post(self.nim_url, headers=headers, json=payload)
+                    api_res = await client.post(self.nim_url, headers=headers, json=payload)
 
-                if res.status_code == 200:
-                    parsed = json.loads(res.json()["choices"][0]["message"]["content"])
-                    return parsed
+                if api_res.status_code == 200:
+                    res = json.loads(api_res.json()["choices"][0]["message"]["content"])
+                else:
+                    res = self._dynamic_clause_analysis(query, retrieved_clauses, target_lang)
             except Exception as e:
                 logger.error(f"NVIDIA NIM error, falling back to dynamic multilingual analyzer: {e}")
+                res = self._dynamic_clause_analysis(query, retrieved_clauses, target_lang)
+        else:
+            res = self._dynamic_clause_analysis(query, retrieved_clauses, target_lang)
 
-        # Dynamic reasoning analyzer operating directly on the actual retrieved clauses from the PDF
-        return self._dynamic_clause_analysis(query, retrieved_clauses, target_lang)
+        # Multilingual guarantee: Ensure spoken summary, bullets, and advice are strictly in target_lang
+        if target_lang != "en-IN":
+            spoken = res.get("spoken_summary", "")
+            has_indic = any(ord(c) > 127 for c in spoken)
+            if not has_indic:
+                res["spoken_summary"] = await translate_text(spoken, target_lang=target_lang, source_lang="en")
+                res["executive_bullet_points"] = [
+                    await translate_text(bp, target_lang=target_lang, source_lang="en")
+                    for bp in res.get("executive_bullet_points", [])
+                ]
+                if res.get("actionable_advice"):
+                    res["actionable_advice"] = await translate_text(res.get("actionable_advice", ""), target_lang=target_lang, source_lang="en")
+                for c in res.get("cited_clauses", []):
+                    if c.get("evon_insight"):
+                        c["evon_insight"] = await translate_text(c["evon_insight"], target_lang=target_lang, source_lang="en")
+
+        return res
 
     def _dynamic_clause_analysis(
         self,

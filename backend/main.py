@@ -2,12 +2,16 @@ import os
 import uuid
 import shutil
 import base64
+import logging
 from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+
+logger = logging.getLogger("main")
+logging.basicConfig(level=logging.INFO)
 
 from config import (
     UPLOAD_DIR,
@@ -23,8 +27,8 @@ from services.llm_service import llm_service
 from services.sample_generator import ensure_sample_pdf
 
 app = FastAPI(
-    title="Evon + Timbre Legal Portal API",
-    description="Voice-Interactive Real Estate & Legal Document Intelligence powered by Gnani AI & NVIDIA NIM",
+    title="LexiVoice Legal Portal API",
+    description="Voice-Interactive Real Estate & Legal Document Intelligence powered by Gnani Voice AI & LexiVoice Reasoning",
     version="1.0.0"
 )
 
@@ -180,9 +184,15 @@ async def query_by_voice(
     if not user_query:
         user_query = "What happens if I terminate the lease early?"
 
-    # Step 2: RAG Retrieval from legal document
+    # Step 2: Translate query to English if non-English for RAG retrieval against English contract
+    from services.llm_service import translate_text, detect_query_language
+    search_query = user_query
+    if any(ord(c) > 127 for c in user_query):
+        search_query = await translate_text(user_query, target_lang="en", source_lang="auto")
+        logger.info(f"Translated query for English RAG: '{user_query}' -> '{search_query}'")
+
     retrieved_clauses = rag_service.search_relevant_clauses(
-        query=user_query,
+        query=search_query,
         doc_id=doc_id,
         top_k=4
     )
@@ -193,7 +203,7 @@ async def query_by_voice(
     elif detected_lang and "auto" not in detected_lang.lower():
         target_lang = detected_lang
     else:
-        target_lang = "en-IN"
+        target_lang = detect_query_language(user_query) or "en-IN"
 
     llm_res = await llm_service.analyze_legal_query(
         query=user_query,
@@ -232,8 +242,15 @@ async def query_by_text(req: TextQueryRequest):
     if not user_query:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
+    # Translate query to English if non-English for RAG retrieval against English contract
+    from services.llm_service import translate_text, detect_query_language
+    search_query = user_query
+    if any(ord(c) > 127 for c in user_query):
+        search_query = await translate_text(user_query, target_lang="en", source_lang="auto")
+        logger.info(f"Translated query for English RAG: '{user_query}' -> '{search_query}'")
+
     retrieved_clauses = rag_service.search_relevant_clauses(
-        query=user_query,
+        query=search_query,
         doc_id=req.doc_id,
         top_k=4
     )
@@ -241,7 +258,6 @@ async def query_by_text(req: TextQueryRequest):
     # Determine target language matching user selection
     target_lang = req.language_code
     if not target_lang or "auto" in target_lang.lower():
-        from services.llm_service import detect_query_language
         target_lang = detect_query_language(user_query) or "en-IN"
 
     llm_res = await llm_service.analyze_legal_query(

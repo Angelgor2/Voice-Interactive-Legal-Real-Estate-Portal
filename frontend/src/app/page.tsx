@@ -154,12 +154,12 @@ function getSuggestedPrompts(clauses?: Clause[], langCode: string = "en-IN"): st
 }
 
 const TIMBRE_VOICES = [
+  { name: "Avinash", gender: "Male", desc: "Authoritative & Deep (Legal)" },
+  { name: "Prakash", gender: "Male", desc: "Formal Legal Tone" },
   { name: "Shivani", gender: "Female", desc: "Expressive & Natural" },
-  { name: "Avinash", gender: "Male", desc: "Authoritative & Deep" },
   { name: "Lakshmi", gender: "Female", desc: "Warm & Clear" },
   { name: "Kalpana", gender: "Female", desc: "Professional Tone" },
   { name: "Shubham", gender: "Male", desc: "Conversational" },
-  { name: "Prakash", gender: "Male", desc: "Formal Legal Tone" },
   { name: "Devansh", gender: "Male", desc: "Crisp & Energetic" },
   { name: "Yashraj", gender: "Male", desc: "Polite & Calm" }
 ];
@@ -211,7 +211,7 @@ export default function LegalPortalPage() {
   const [recordingDuration, setRecordingDuration] = useState<number>(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [languageCode, setLanguageCode] = useState<string>("indic-auto");
-  const [voice, setVoice] = useState<string>("Shivani");
+  const [voice, setVoice] = useState<string>("Avinash");
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
   // Text query input

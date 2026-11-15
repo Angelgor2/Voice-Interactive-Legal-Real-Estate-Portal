@@ -16,7 +16,7 @@ GNANI_STT_URL = os.getenv("GNANI_STT_URL", "https://api.vachana.ai/stt/v3")
 GNANI_TTS_URL = os.getenv("GNANI_TTS_URL", "https://api.vachana.ai/api/v1/tts/inference")
 GNANI_STT_MODEL = os.getenv("GNANI_STT_MODEL", "prisma-v3.0")
 GNANI_TTS_MODEL = os.getenv("GNANI_TTS_MODEL", "timbre-v3.0")
-GNANI_DEFAULT_VOICE = os.getenv("GNANI_DEFAULT_VOICE", "Shivani")
+GNANI_DEFAULT_VOICE = os.getenv("GNANI_DEFAULT_VOICE", "Avinash")
 
 # Reasoning LLM Config (NVIDIA NIM Nemotron / Evon 30B)
 NVIDIA_NIM_API_KEY = os.getenv("NVIDIA_NIM_API_KEY", "")

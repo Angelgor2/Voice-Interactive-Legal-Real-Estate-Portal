@@ -307,14 +307,20 @@ class RAGService:
                 keyword_boost = match_count * 0.15
 
                 # Special legal synonym boosts
-                if ("terminate" in q_lower or "early" in q_lower or "exit" in q_lower or "lock-in" in q_lower) and ("early exit" in content or "lock-in" in content or "terminate" in content):
-                    keyword_boost += 0.5
-                if ("maintenance" in q_lower or "society" in q_lower or "bill" in q_lower) and ("maintenance" in content or "society" in content):
-                    keyword_boost += 0.5
-                if ("deposit" in q_lower or "refund" in q_lower) and ("security deposit" in content or "refund" in content):
-                    keyword_boost += 0.5
-                if ("escalat" in q_lower or "increase" in q_lower) and ("escalat" in content or "increase" in content):
-                    keyword_boost += 0.5
+                if ("terminate" in q_lower or "early" in q_lower or "exit" in q_lower or "lock-in" in q_lower or "લોક" in q_lower or "રદ" in q_lower) and ("early exit" in content or "lock-in" in content or "terminate" in content):
+                    keyword_boost += 0.8
+                if ("maintenance" in q_lower or "society" in q_lower or "bill" in q_lower or "મેઇન્ટેનન્સ" in q_lower or "સોસાયટી" in q_lower) and ("maintenance" in content or "society" in content):
+                    keyword_boost += 0.8
+                if ("deposit" in q_lower or "refund" in q_lower or "ડિપોઝિટ" in q_lower or "રિફંડ" in q_lower) and ("security deposit" in content or "refund" in content):
+                    keyword_boost += 0.8
+                if ("escalat" in q_lower or "increase" in q_lower or "ભાડું" in q_lower or "વધારો" in q_lower) and ("escalat" in content or "increase" in content or "rent" in content):
+                    keyword_boost += 0.8
+                if ("stamp" in q_lower or "duty" in q_lower or "registration" in q_lower or "સ્ટેમ્પ" in q_lower or "ડ્યુટી" in q_lower) and ("stamp" in content or "registration" in content):
+                    keyword_boost += 0.9
+                if ("sublet" in q_lower or "commercial" in q_lower or "residential" in q_lower or "સબલેટ" in q_lower) and ("sublet" in content or "residential" in content):
+                    keyword_boost += 0.8
+                if ("alter" in q_lower or "structural" in q_lower or "renovat" in q_lower or "ફેરફાર" in q_lower) and ("alter" in content or "structural" in content):
+                    keyword_boost += 0.8
 
                 if c_id in candidate_map:
                     candidate_map[c_id]["score"] += keyword_boost

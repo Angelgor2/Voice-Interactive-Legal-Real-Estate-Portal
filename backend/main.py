@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger("main")
@@ -66,6 +66,11 @@ class TTSRequest(BaseModel):
     language: Optional[str] = "en-IN"
     voice: Optional[str] = "Shivani"
     speed: Optional[float] = 1.0
+
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="http://localhost:3000")
 
 
 @app.get("/api/health")
